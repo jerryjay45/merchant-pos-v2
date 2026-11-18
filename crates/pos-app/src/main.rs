@@ -1,11 +1,16 @@
 use std::{
     io::{self, Write},
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use pos_core::{
-    check_session_gate, new_password_hash, AuthError, AuthService, ConfigRepository, Role, User,
+    check_session_gate, needs_setup, new_password_hash, run_setup,
+    setup::{parse_gct_rate, validate_business, validate_manager, validate_terminal_id},
+    AuthError, AuthService, BusinessInfo, ConfigRepository, Role, SetupData, SetupError, User,
     UserRepository,
 };
 use pos_db::{ConfigDb, UsersDb};
@@ -50,7 +55,8 @@ fn fit_title_px(name: &str, max_width: f32) -> i32 {
     px
 }
 
-/// Dev helper until the first-run setup wizard exists:
+/// Dev helper for adding extra users from a terminal (the first manager is created by the
+/// setup wizard):
 ///   pos-app add-user <username> <cashier|supervisor|manager> [full name...]
 fn add_user(users: &UsersDb, args: &[String]) -> Result<(), String> {
     let usage = "usage: add-user <username> <cashier|supervisor|manager> [full name]";
@@ -71,6 +77,129 @@ fn add_user(users: &UsersDb, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+const LAST_PAGE: i32 = 6;
+
+/// Reads the wizard's fields into a `SetupData`.
+fn collect_setup(win: &SetupWindow) -> SetupData {
+    let gct_enabled = win.get_gct_enabled();
+    SetupData {
+        business: BusinessInfo {
+            name: win.get_biz_name().to_string(),
+            address: win.get_biz_address().to_string(),
+            phone: win.get_biz_phone().to_string(),
+            email: win.get_biz_email().to_string(),
+            tax_id: win.get_biz_tax_id().to_string(),
+            receipt_footer: win.get_biz_footer().to_string(),
+        },
+        terminal_id: win.get_terminal_id().to_string(),
+        currency_symbol: win.get_currency().to_string(),
+        gct_enabled,
+        // A disabled GCT keeps the default rate if the box was left blank.
+        gct_rate_pct: parse_gct_rate(&win.get_gct_rate()).unwrap_or(16.5),
+        manager_full_name: win.get_mgr_name().to_string(),
+        manager_username: win.get_mgr_user().to_string(),
+        manager_password: win.get_mgr_pass().to_string(),
+        receipt_printer_name: win.get_printer_name().to_string(),
+        receipt_copies: win.get_copies().clamp(1, 5) as u8,
+    }
+}
+
+/// Checks the page the user is leaving; the message is shown under the page.
+fn validate_setup_page(win: &SetupWindow, page: i32) -> Result<(), SetupError> {
+    match page {
+        1 => validate_business(&win.get_biz_name()),
+        2 => validate_terminal_id(&win.get_terminal_id()),
+        3 if win.get_gct_enabled() => parse_gct_rate(&win.get_gct_rate()).map(|_| ()),
+        4 => validate_manager(
+            &win.get_mgr_name(),
+            &win.get_mgr_user(),
+            &win.get_mgr_pass(),
+            &win.get_mgr_confirm(),
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn setup_summary(win: &SetupWindow) -> String {
+    let d = collect_setup(win);
+    let first_line = |s: &str| s.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("-").to_uppercase();
+    let mut lines = vec![
+        format!("✓  Business: {}", first_line(&d.business.name)),
+        format!("✓  Terminal ID: {}", d.terminal_id.trim().to_uppercase()),
+        format!("✓  Manager account: {}", d.manager_username.trim().to_uppercase()),
+    ];
+    if d.receipt_printer_name.trim().is_empty() {
+        lines.push("-  Printer: not configured (set in Manager > Settings)".into());
+    } else {
+        lines.push(format!("✓  Printer: {}", d.receipt_printer_name.trim()));
+    }
+    lines.push(String::new());
+    lines.push("You can change any of these settings at any time from the Manager dashboard.".into());
+    lines.join("\n")
+}
+
+/// Shows the first-run wizard and returns true once setup has been saved.
+/// Nothing is written until the last page, so closing the window early leaves a clean slate
+/// and the wizard simply shows again next time.
+fn run_wizard(users: Arc<UsersDb>, config: Arc<ConfigDb>) -> Result<bool, slint::PlatformError> {
+    let win = SetupWindow::new()?;
+    win.set_version_text(VERSION.into());
+    let finished = Arc::new(AtomicBool::new(false));
+
+    let weak = win.as_weak();
+    win.on_back(move || {
+        let Some(win) = weak.upgrade() else { return };
+        win.set_error_text("".into());
+        win.set_page((win.get_page() - 1).max(0));
+    });
+
+    let (weak, finished_flag) = (win.as_weak(), finished.clone());
+    win.on_next(move || {
+        let Some(win) = weak.upgrade() else { return };
+        if win.get_busy() {
+            return;
+        }
+        let page = win.get_page();
+
+        if page < LAST_PAGE {
+            if let Err(e) = validate_setup_page(&win, page) {
+                win.set_error_text(e.to_string().into());
+                return;
+            }
+            win.set_error_text("".into());
+            if page + 1 == LAST_PAGE {
+                win.set_summary_text(setup_summary(&win).into());
+            }
+            win.set_page(page + 1);
+            return;
+        }
+
+        // Last page: save everything. Argon2 is slow on purpose, so use a background thread.
+        win.set_busy(true);
+        win.set_error_text("".into());
+        let data = collect_setup(&win);
+        let (users, config, weak, finished_flag) =
+            (users.clone(), config.clone(), win.as_weak(), finished_flag.clone());
+        std::thread::spawn(move || {
+            let result = run_setup(&*config, &*users, &data);
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(win) = weak.upgrade() else { return };
+                win.set_busy(false);
+                match result {
+                    Ok(()) => {
+                        finished_flag.store(true, Ordering::SeqCst);
+                        let _ = win.hide();
+                    }
+                    Err(e) => win.set_error_text(e.to_string().into()),
+                }
+            });
+        });
+    });
+
+    win.run()?;
+    Ok(finished.load(Ordering::SeqCst))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = data_dir();
     std::fs::create_dir_all(&dir)?;
@@ -80,6 +209,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("add-user") {
         return add_user(&users, &args[1..]).map_err(Into::into);
+    }
+
+    // First run: no manager account yet, so walk through the setup wizard first.
+    if needs_setup(&*users)? && !run_wizard(users.clone(), config.clone())? {
+        return Ok(()); // closed without finishing
     }
 
     let auth = Arc::new(AuthService::new(users.clone())?);
@@ -100,13 +234,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     win.set_business_subtitle(biz.subtitle.split_whitespace().collect::<Vec<_>>().join(" ").into());
     win.set_version_text(VERSION.into());
     win.set_zoom_pct(config.get_int("ui_scale_pct", 100)?.clamp(70, 150) as f32);
-
-    if users.user_count()? == 0 {
-        win.set_info_text(
-            "No users yet. Run `pos-app add-user <username> manager` once to create the first one."
-                .into(),
-        );
-    }
 
     // The Python fields force upper case; the check is case-insensitive anyway.
     let weak = win.as_weak();

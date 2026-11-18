@@ -147,6 +147,12 @@ mod tests {
         fn user_count(&self) -> Result<u64, StorageError> {
             Ok(self.0.len() as u64)
         }
+        fn manager_count(&self) -> Result<u64, StorageError> {
+            Ok(self.0.iter().filter(|r| r.user.role == Role::Manager).count() as u64)
+        }
+        fn insert_user(&self, _: &str, _: &str, _: &str, _: Role) -> Result<i64, StorageError> {
+            unimplemented!("not needed by these tests")
+        }
     }
 
     fn rec(name: &str, hash: String, active: bool) -> UserRecord {

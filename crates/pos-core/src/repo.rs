@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::user::UserRecord;
+use crate::user::{Role, UserRecord};
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[error("{0}")]
@@ -15,6 +15,16 @@ pub trait UserRepository: Send + Sync {
     /// Case-insensitive lookup. Returns inactive users too; the caller decides.
     fn find_by_username(&self, username: &str) -> Result<Option<UserRecord>, StorageError>;
     fn user_count(&self) -> Result<u64, StorageError>;
+    /// Active or not; the setup wizard only runs while this is zero.
+    fn manager_count(&self) -> Result<u64, StorageError>;
+    /// Stores the user exactly as given (callers normalise names and hash the password).
+    fn insert_user(
+        &self,
+        full_name: &str,
+        username: &str,
+        password_hash: &str,
+        role: Role,
+    ) -> Result<i64, StorageError>;
 }
 
 pub trait SessionRepository: Send + Sync {
@@ -28,10 +38,30 @@ pub struct Business {
     pub subtitle: String,
 }
 
+/// The full `business` table row (what the setup wizard and receipts use).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BusinessInfo {
+    pub name: String,
+    pub address: String,
+    pub phone: String,
+    pub email: String,
+    pub tax_id: String,
+    pub receipt_footer: String,
+}
+
 pub trait ConfigRepository: Send + Sync {
     fn get(&self, key: &str) -> Result<Option<String>, StorageError>;
     fn set(&self, key: &str, value: &str) -> Result<(), StorageError>;
     fn business(&self) -> Result<Business, StorageError>;
+
+    /// Writes the business row and the settings in ONE transaction: either everything is
+    /// applied or, on any error, nothing is. Empty business fields are left unchanged,
+    /// like `update_business` in the Python app.
+    fn apply_setup(
+        &self,
+        business: &BusinessInfo,
+        settings: &[(String, String)],
+    ) -> Result<(), StorageError>;
 
     fn get_bool(&self, key: &str, default: bool) -> Result<bool, StorageError> {
         Ok(match self.get(key)? {
@@ -53,6 +83,12 @@ impl<T: UserRepository + ?Sized> UserRepository for Arc<T> {
     fn user_count(&self) -> Result<u64, StorageError> {
         (**self).user_count()
     }
+    fn manager_count(&self) -> Result<u64, StorageError> {
+        (**self).manager_count()
+    }
+    fn insert_user(&self, n: &str, u: &str, h: &str, r: Role) -> Result<i64, StorageError> {
+        (**self).insert_user(n, u, h, r)
+    }
 }
 impl<T: SessionRepository + ?Sized> SessionRepository for Arc<T> {
     fn has_open_session(&self, id: i64) -> Result<bool, StorageError> {
@@ -68,5 +104,8 @@ impl<T: ConfigRepository + ?Sized> ConfigRepository for Arc<T> {
     }
     fn business(&self) -> Result<Business, StorageError> {
         (**self).business()
+    }
+    fn apply_setup(&self, b: &BusinessInfo, s: &[(String, String)]) -> Result<(), StorageError> {
+        (**self).apply_setup(b, s)
     }
 }

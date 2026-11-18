@@ -1,0 +1,438 @@
+// First-run setup wizard, ported from ui/setup_wizard.py.
+// Pages: 0 Welcome, 1 Business Info, 2 Terminal, 3 Tax & Currency, 4 Manager Account,
+//        5 Printer (optional), 6 Done.
+// All values live in properties; main.rs validates a page when Next is pressed and moves `page`.
+
+import { Theme } from "theme.slint";
+import { HexLogo, AmberButton, ZoomButton, Field, OutlineButton, FieldLabel, CheckRow, AreaField } from "widgets.slint";
+
+component PageHeader inherits VerticalLayout {
+    in property <string> title;
+    in property <string> subtitle;
+    spacing: 6px;
+    Text { text: root.title; font-size: 16px; font-weight: 700; color: Theme.text; }
+    Text { text: root.subtitle; font-size: 12px; color: Theme.muted; wrap: word-wrap; }
+    Rectangle { height: 1px; background: Theme.border-light; }
+}
+
+export component SetupWindow inherits Window {
+    title: "Merchant POS - Setup Wizard";
+    background: #FFFFFF;
+    min-width: 540px;
+    min-height: 660px;
+    preferred-width: 560px;
+    preferred-height: 720px;
+
+    // navigation
+    in-out property <int> page: 0;
+    in property <int> page-count: 7;
+    in property <bool> busy;
+    in property <string> error-text;
+    in property <string> version-text: "v0.1.0";
+
+    // page 1: business
+    in-out property <string> biz-name;
+    in-out property <string> biz-address;
+    in-out property <string> biz-phone;
+    in-out property <string> biz-email;
+    in-out property <string> biz-tax-id;
+    in-out property <string> biz-footer: "THANK YOU FOR YOUR BUSINESS!";
+    // page 2: terminal
+    in-out property <string> terminal-id;
+    // page 3: tax and currency
+    in-out property <string> currency: "$";
+    in-out property <bool> gct-enabled: true;
+    in-out property <string> gct-rate: "16.5";
+    // page 4: manager
+    in-out property <string> mgr-name;
+    in-out property <string> mgr-user;
+    in-out property <string> mgr-pass;
+    in-out property <string> mgr-confirm;
+    // page 5: printer
+    in-out property <string> printer-name;
+    in-out property <int> copies: 1;
+    // page 6: summary, filled in by Rust
+    in property <string> summary-text;
+
+    callback next();
+    callback back();
+
+    property <string> page-title:
+        page == 0 ? "Welcome" :
+        page == 1 ? "Business Info" :
+        page == 2 ? "Terminal" :
+        page == 3 ? "Tax & Currency" :
+        page == 4 ? "Manager Account" :
+        page == 5 ? "Printer" : "Done";
+
+    VerticalLayout {
+        // top bar
+        Rectangle {
+            height: 64px;
+            background: Theme.dark;
+            Rectangle {
+                y: parent.height - 2px;
+                height: 2px;
+                background: Theme.accent;
+            }
+            HorizontalLayout {
+                padding-left: 24px;
+                padding-right: 24px;
+                Text {
+                    text: root.page-title;
+                    color: white;
+                    font-size: 16px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: "Step " + (root.page + 1) + " of " + root.page-count;
+                    color: Theme.accent;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        // progress
+        Rectangle {
+            height: 4px;
+            background: Theme.dark-2;
+            Rectangle {
+                x: 0px;
+                width: parent.width * root.page / (root.page-count - 1);
+                background: Theme.accent;
+                animate width { duration: 150ms; }
+            }
+        }
+
+        // page content
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            if root.page == 0 : VerticalLayout {
+                padding: 40px;
+                spacing: 16px;
+                alignment: center;
+                HorizontalLayout { alignment: center; HexLogo { size: 64px; } }
+                Text {
+                    text: "Welcome to\nMerchant POS Systems";
+                    font-size: 22px;
+                    font-weight: 800;
+                    color: Theme.text;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "This wizard will help you set up your POS system.\nIt only takes a few minutes.";
+                    font-size: 13px;
+                    color: Theme.muted;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if root.page == 1 : VerticalLayout {
+                padding-left: 32px;
+                padding-right: 32px;
+                padding-top: 18px;
+                padding-bottom: 12px;
+                spacing: 6px;
+                init => { biz-name-field.focus-input(); }
+
+                PageHeader { title: "Business Information"; subtitle: "This appears on receipts and price tags."; }
+                FieldLabel { text: "Business Name *"; }
+                biz-name-field := Field {
+                    text <=> root.biz-name;
+                    placeholder: "e.g. JOHN'S SUPERMARKET";
+                    force-upper: true;
+                    accepted => { biz-address-field.focus-input(); }
+                }
+                FieldLabel { text: "Address  (one line per printed line)"; }
+                biz-address-field := AreaField {
+                    text <=> root.biz-address;
+                    placeholder: "e.g.\n12 MAIN STREET\nKINGSTON";
+                    box-height: 66px;
+                }
+                FieldLabel { text: "Phone"; }
+                biz-phone-field := Field {
+                    text <=> root.biz-phone;
+                    placeholder: "e.g. 876-555-0100";
+                    force-upper: true;
+                    accepted => { biz-email-field.focus-input(); }
+                }
+                FieldLabel { text: "Email"; }
+                biz-email-field := Field {
+                    text <=> root.biz-email;
+                    placeholder: "e.g. info@business.com";
+                    accepted => { biz-tax-field.focus-input(); }
+                }
+                FieldLabel { text: "TRN / Tax ID"; }
+                biz-tax-field := Field {
+                    text <=> root.biz-tax-id;
+                    placeholder: "e.g. 123-456-789";
+                    force-upper: true;
+                    accepted => { biz-footer-field.focus-input(); }
+                }
+                FieldLabel { text: "Receipt Footer"; }
+                biz-footer-field := AreaField {
+                    text <=> root.biz-footer;
+                    placeholder: "e.g. Thank you for your business!";
+                    box-height: 52px;
+                }
+                Rectangle { vertical-stretch: 1; }
+            }
+
+            if root.page == 2 : VerticalLayout {
+                padding-left: 40px;
+                padding-right: 40px;
+                padding-top: 32px;
+                spacing: 12px;
+                alignment: start;
+                init => { terminal-field.focus-input(); }
+
+                Text { text: "Terminal Identity"; font-size: 17px; font-weight: 800; color: Theme.text; }
+                Text {
+                    text: "Each POS terminal needs a unique ID so receipts from different terminals never clash. Use a short code like T01, T02, or a location name like MAIN or COUNTER2.";
+                    font-size: 12px;
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 4px; }
+                FieldLabel { text: "Terminal ID  *"; font-size: 12px; }
+                terminal-field := Field {
+                    text <=> root.terminal-id;
+                    placeholder: "e.g. T01  or  MAIN  or  COUNTER2";
+                    force-upper: true;
+                    accepted => { root.next(); }
+                }
+                Text {
+                    text: "Max 10 characters. Letters and numbers only.\nThis will appear on every receipt:  T01-0001,  T01-0002 ...";
+                    font-size: 10px;
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+            }
+
+            if root.page == 3 : VerticalLayout {
+                padding-left: 32px;
+                padding-right: 32px;
+                padding-top: 24px;
+                spacing: 12px;
+                alignment: start;
+                init => { currency-field.focus-input(); }
+
+                PageHeader { title: "Tax & Currency"; subtitle: "Configure your local tax and currency settings."; }
+                FieldLabel { text: "Currency Symbol"; }
+                currency-field := Field {
+                    text <=> root.currency;
+                    placeholder: "e.g. $  or  J$";
+                    accepted => { gct-rate-field.focus-input(); }
+                }
+                CheckRow { text: "Enable GCT (General Consumption Tax)"; checked <=> root.gct-enabled; }
+                FieldLabel { text: "GCT Rate (%)"; }
+                HorizontalLayout {
+                    alignment: start;
+                    gct-rate-field := Field {
+                        width: 140px;
+                        text <=> root.gct-rate;
+                        placeholder: "16.5";
+                        accepted => { root.next(); }
+                    }
+                }
+                Text {
+                    text: "GCT will be added to products marked as GCT-applicable at checkout.";
+                    font-size: 11px;
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+            }
+
+            if root.page == 4 : VerticalLayout {
+                padding-left: 32px;
+                padding-right: 32px;
+                padding-top: 24px;
+                spacing: 8px;
+                alignment: start;
+                init => { mgr-name-field.focus-input(); }
+
+                PageHeader {
+                    title: "Manager Account";
+                    subtitle: "Create the first manager account. This account has full access to all settings.";
+                }
+                Rectangle { height: 2px; }
+                FieldLabel { text: "Full Name *"; }
+                mgr-name-field := Field {
+                    text <=> root.mgr-name;
+                    placeholder: "e.g. John Smith";
+                    force-upper: true;
+                    accepted => { mgr-user-field.focus-input(); }
+                }
+                FieldLabel { text: "Username *"; }
+                mgr-user-field := Field {
+                    text <=> root.mgr-user;
+                    placeholder: "e.g. MANAGER";
+                    force-upper: true;
+                    accepted => { mgr-pass-field.focus-input(); }
+                }
+                FieldLabel { text: "Password *"; }
+                mgr-pass-field := Field {
+                    text <=> root.mgr-pass;
+                    placeholder: "Min. 4 characters";
+                    secret: true;
+                    force-upper: true;
+                    accepted => { mgr-confirm-field.focus-input(); }
+                }
+                FieldLabel { text: "Confirm Password *"; }
+                mgr-confirm-field := Field {
+                    text <=> root.mgr-confirm;
+                    placeholder: "Re-enter password";
+                    secret: true;
+                    force-upper: true;
+                    accepted => { root.next(); }
+                }
+            }
+
+            if root.page == 5 : VerticalLayout {
+                padding-left: 32px;
+                padding-right: 32px;
+                padding-top: 24px;
+                spacing: 12px;
+                alignment: start;
+                init => { printer-field.focus-input(); }
+
+                PageHeader {
+                    title: "Printer Setup";
+                    subtitle: "Optional - you can configure this later in Manager Settings.";
+                }
+                FieldLabel { text: "Receipt Printer"; }
+                printer-field := Field {
+                    text <=> root.printer-name;
+                    placeholder: "e.g. EPSON TM-U220 - as it appears in your OS printer list";
+                    accepted => { root.next(); }
+                }
+                Text {
+                    text: "Enter the printer's name exactly as installed in your OS, or leave blank to use the OS default printer. You can fine-tune the print mode and paper width later in Manager > Settings > Printers.";
+                    font-size: 10px;
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 4px; }
+                FieldLabel { text: "Receipt Copies"; }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: 10px;
+                    ZoomButton {
+                        text: "-";
+                        clicked => { root.copies = Math.max(1, root.copies - 1); }
+                    }
+                    Text {
+                        text: root.copies;
+                        min-width: 24px;
+                        font-size: 14px;
+                        font-weight: 600;
+                        color: Theme.text;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    ZoomButton {
+                        text: "+";
+                        clicked => { root.copies = Math.min(5, root.copies + 1); }
+                    }
+                }
+            }
+
+            if root.page == 6 : VerticalLayout {
+                padding: 40px;
+                spacing: 16px;
+                alignment: center;
+                Rectangle {
+                    height: 56px;
+                    Rectangle {
+                        width: 56px;
+                        height: 56px;
+                        border-radius: 28px;
+                        background: Theme.green-light;
+                        border-width: 2px;
+                        border-color: Theme.green-border;
+                        Text {
+                            text: "✓";
+                            color: Theme.green;
+                            font-size: 30px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                Text {
+                    text: "You're all set!";
+                    font-size: 22px;
+                    font-weight: 800;
+                    color: Theme.text;
+                    horizontal-alignment: center;
+                }
+                Rectangle {
+                    background: Theme.warm-white;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    height: summary.preferred-height + 28px;
+                    summary := Text {
+                        x: 18px;
+                        y: 14px;
+                        width: parent.width - 36px;
+                        text: root.summary-text;
+                        font-size: 12px;
+                        color: Theme.muted;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // error line
+        Rectangle {
+            height: root.error-text == "" ? 0px : 28px;
+            Text {
+                x: 24px;
+                width: parent.width - 48px;
+                text: root.error-text;
+                color: Theme.red;
+                font-size: 11px;
+                font-weight: 600;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        // bottom navigation
+        Rectangle {
+            height: 64px;
+            background: Theme.warm-white;
+            Rectangle { y: 0px; height: 1px; background: Theme.border; }
+            HorizontalLayout {
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 12px;
+                padding-bottom: 12px;
+                spacing: 10px;
+                OutlineButton {
+                    width: 100px;
+                    text: "← Back";
+                    active: root.page > 0 && !root.busy;
+                    clicked => { root.back(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                AmberButton {
+                    width: 140px;
+                    height: 40px;
+                    text: root.busy ? "Saving..." : root.page == root.page-count - 1 ? "Launch POS →" : "Next →";
+                    active: !root.busy;
+                    clicked => { root.next(); }
+                }
+            }
+        }
+    }
+}
