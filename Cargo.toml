@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/pos-core", "crates/pos-db", "crates/pos-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+thiserror = "1"
+argon2 = { version = "0.5", features = ["std"] }
+password-hash = { version = "0.5", features = ["getrandom"] }
+sha2 = "0.10"
+rusqlite = { version = "0.31", features = ["bundled"] }

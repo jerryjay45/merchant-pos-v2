@@ -1,0 +1,8 @@
+[package]
+name = "pos-db"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pos-core = { path = "../pos-core" }
+rusqlite.workspace = true

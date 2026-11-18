@@ -1,0 +1,10 @@
+[package]
+name = "pos-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+argon2.workspace = true
+password-hash.workspace = true
+sha2.workspace = true

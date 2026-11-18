@@ -1,0 +1,320 @@
+// Login screen, ported from ui/login_window.py: white card, amber hex logo,
+// show/hide password, upper-cased input, inline error, zoom controls.
+
+// Amber theme (ui/shared/theme.py)
+global Theme {
+    out property <color> accent: #EF9F27;
+    out property <color> accent-dark: #BA7517;
+    out property <color> accent-darker: #633806;
+    out property <color> text: #1C1C1A;
+    out property <color> label: #4A4845;
+    out property <color> muted: #6B6860;
+    out property <color> border: #C8C3B8;
+    out property <color> red: #A32D2D;
+    out property <color> red-light: #FCEBEB;
+    out property <color> red-border: #F09595;
+}
+
+component HexLogo inherits Rectangle {
+    in property <length> size: 44px;
+    width: size;
+    height: size;
+    Path {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        commands: "M 50 2 L 91 26 L 91 74 L 50 98 L 9 74 L 9 26 Z";
+        fill: Theme.accent;
+    }
+}
+
+component AmberButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> active: true;
+    in property <float> ui-scale: 1.0;
+    callback clicked();
+
+    height: 42px * ui-scale;
+    border-radius: 8px;
+    background: !active ? #D3D1C7
+        : touch.pressed ? Theme.accent-darker
+        : touch.has-hover ? Theme.accent-dark
+        : Theme.accent;
+
+    touch := TouchArea {
+        enabled: root.active;
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: root.text;
+        color: white;
+        font-size: 14px * root.ui-scale;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component ZoomButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    width: 26px;
+    height: 26px;
+    border-radius: 5px;
+    border-width: 1px;
+    background: white;
+    border-color: touch.has-hover ? Theme.accent : Theme.border;
+    touch := TouchArea { clicked => { root.clicked(); } }
+    Text {
+        text: root.text;
+        color: touch.has-hover ? Theme.accent : Theme.text;
+        font-size: 14px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component Field inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    in property <bool> secret: false;
+    in property <bool> active: true;
+    in property <float> ui-scale: 1.0;
+    callback accepted();
+    callback edited(string);
+    property <bool> revealed: false;
+
+    public function focus-input() { input.focus(); }
+
+    height: 40px * ui-scale;
+    border-radius: 8px;
+    border-width: 1px;
+    background: input.has-focus ? white : #FAFAF8;
+    border-color: input.has-focus ? Theme.accent : Theme.border;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 6px;
+
+        Rectangle {
+            input := TextInput {
+                x: 0px;
+                width: parent.width;
+                height: parent.height;
+                vertical-alignment: center;
+                font-size: 13px * root.ui-scale;
+                color: Theme.text;
+                enabled: root.active;
+                input-type: (root.secret && !root.revealed) ? InputType.password : InputType.text;
+                accepted => { root.accepted(); }
+                edited => { root.edited(self.text); }
+            }
+            if input.text == "" : Text {
+                x: 0px;
+                width: parent.width;
+                horizontal-alignment: left;
+                text: root.placeholder;
+                color: #A9A69D;
+                font-size: 13px * root.ui-scale;
+                vertical-alignment: center;
+            }
+        }
+
+        if root.secret : Rectangle {
+            width: 44px;
+            Text {
+                text: root.revealed ? "Hide" : "Show";
+                font-size: 12px * root.ui-scale;
+                color: eye.has-hover ? Theme.label : Theme.muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            eye := TouchArea { clicked => { root.revealed = !root.revealed; } }
+        }
+    }
+}
+
+export component LoginWindow inherits Window {
+    title: "Merchant POS Systems";
+    background: #FFFFFF;
+    min-width: 480px;
+    min-height: 520px;
+    preferred-width: 600px;
+    preferred-height: 680px;
+
+    // text typed by the user
+    in-out property <string> username;
+    in-out property <string> password;
+
+    // display state, set from Rust
+    in property <string> business-name: "Merchant POS Systems";   // may contain \n
+    in property <string> business-subtitle;
+    in property <int> title-size: 20;
+    in property <string> error-text;
+    in property <string> info-text;
+    in property <bool> busy;
+    in property <string> version-text: "v0.1.0";
+    in-out property <float> zoom-pct: 100;
+
+    property <float> s: zoom-pct / 100;
+
+    callback submit();
+    callback zoom-changed(float);
+    callback username-edited(string);
+    callback password-edited(string);
+
+    init => { user-field.focus-input(); }
+
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 360px * root.s;
+                background: white;
+                border-radius: 16px;
+                border-width: 1px;
+                border-color: Theme.border;
+                drop-shadow-blur: 32px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: #0000001e;
+
+                VerticalLayout {
+                    padding-left: 28px * root.s;
+                    padding-right: 28px * root.s;
+                    padding-top: 28px * root.s;
+                    padding-bottom: 24px * root.s;
+                    spacing: 0px;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        HexLogo { size: 44px * root.s; }
+                    }
+                    Rectangle { height: 16px * root.s; }
+
+                    Text {
+                        text: root.business-name;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        font-size: root.title-size * 1px * root.s;
+                        font-weight: 700;
+                        color: Theme.text;
+                    }
+                    if root.business-subtitle != "" : Text {
+                        text: root.business-subtitle;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        font-size: 13px * root.s;
+                        font-weight: 500;
+                        color: Theme.text;
+                    }
+                    Rectangle { height: 6px * root.s; }
+                    Text {
+                        text: "Sign in to continue";
+                        horizontal-alignment: center;
+                        font-size: 13px * root.s;
+                        color: Theme.label;
+                    }
+                    Rectangle { height: 24px * root.s; }
+
+                    Text {
+                        text: "USERNAME";
+                        font-size: 11px * root.s;
+                        font-weight: 600;
+                        color: Theme.label;
+                    }
+                    Rectangle { height: 5px * root.s; }
+                    user-field := Field {
+                        text <=> root.username;
+                        placeholder: "Enter your username";
+                        active: !root.busy;
+                        ui-scale: root.s;
+                        accepted => { root.submit(); }
+                        edited(t) => { root.username-edited(t); }
+                    }
+                    Rectangle { height: 12px * root.s; }
+
+                    Text {
+                        text: "PASSWORD";
+                        font-size: 11px * root.s;
+                        font-weight: 600;
+                        color: Theme.label;
+                    }
+                    Rectangle { height: 5px * root.s; }
+                    pass-field := Field {
+                        text <=> root.password;
+                        placeholder: "Enter your password";
+                        secret: true;
+                        active: !root.busy;
+                        ui-scale: root.s;
+                        accepted => { root.submit(); }
+                        edited(t) => { root.password-edited(t); }
+                    }
+
+                    if root.error-text != "" : Rectangle { height: 10px * root.s; }
+                    if root.error-text != "" : Rectangle {
+                        height: err.preferred-height + 14px * root.s;
+                        background: Theme.red-light;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: Theme.red-border;
+                        err := Text {
+                            x: 10px;
+                            width: parent.width - 20px;
+                            text: root.error-text;
+                            wrap: word-wrap;
+                            color: Theme.red;
+                            font-size: 12px * root.s;
+                            vertical-alignment: center;
+                        }
+                    }
+                    if root.error-text != "" : Rectangle { height: 6px * root.s; }
+
+                    Rectangle { height: 16px * root.s; }
+                    AmberButton {
+                        text: root.busy ? "Signing in..." : "Sign In";
+                        active: !root.busy;
+                        ui-scale: root.s;
+                        clicked => { root.submit(); }
+                    }
+
+                    if root.info-text != "" : Rectangle { height: 12px * root.s; }
+                    if root.info-text != "" : Text {
+                        text: root.info-text;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        font-size: 11px * root.s;
+                        color: Theme.muted;
+                    }
+
+                    Rectangle { height: 20px * root.s; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: root.version-text;
+                            font-size: 11px * root.s;
+                            color: Theme.muted;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        ZoomButton { text: "-"; clicked => { root.zoom-changed(root.zoom-pct - 10); } }
+                        Text {
+                            text: Math.round(root.zoom-pct) + "%";
+                            min-width: 36px;
+                            font-size: 11px * root.s;
+                            color: Theme.text;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        ZoomButton { text: "+"; clicked => { root.zoom-changed(root.zoom-pct + 10); } }
+                    }
+                }
+            }
+        }
+    }
+}

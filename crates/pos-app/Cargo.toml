@@ -1,0 +1,12 @@
+[package]
+name = "pos-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pos-core = { path = "../pos-core" }
+pos-db = { path = "../pos-db" }
+slint = "1.8"
+
+[build-dependencies]
+slint-build = "1.8"
