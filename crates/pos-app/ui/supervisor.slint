@@ -1,6 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Field, OutlineButton } from "widgets.slint";
+import { Field, OutlineButton, AmberButton } from "widgets.slint";
+import { ProductForm } from "product_form.slint";
 
 // Supervisor / manager window: areas across the top, pages inside each area, the page below.
 // Same structure as the Python app (Sales / Inventory / Printing / Data / Setup). The areas and
@@ -12,6 +13,7 @@ export struct NavItem {
 }
 
 export struct ProductRowData {
+    id: int,
     name: string,
     barcode: string,
     cost: string,
@@ -51,6 +53,27 @@ component TabButton inherits Rectangle {
     }
 }
 
+component SmallButton inherits Rectangle {
+    in property <string> text;
+    in property <color> tone;
+    in property <color> hover-bg;
+    callback clicked();
+    height: 26px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: root.tone;
+    background: touch.has-hover ? root.hover-bg : transparent;
+    Text {
+        text: root.text;
+        font-size: 12px;
+        font-weight: 600;
+        color: root.tone;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
 component ProductsPage inherits Rectangle {
     in property <[ProductRowData]> rows;
     in-out property <string> search-text <=> search.text;
@@ -66,6 +89,9 @@ component ProductsPage inherits Rectangle {
     callback refresh();
     callback prev-page();
     callback next-page();
+    callback add-product();
+    callback edit-product(int);
+    callback delete-product(int);
 
     background: Theme.warm-white;
 
@@ -91,6 +117,12 @@ component ProductsPage inherits Rectangle {
                     height: 36px;
                     placeholder: "Search by name, barcode, alias or group…";
                     accepted => { root.search(self.text); }
+                }
+                AmberButton {
+                    width: 130px;
+                    height: 36px;
+                    text: "+  Add Product";
+                    clicked => { root.add-product(); }
                 }
                 OutlineButton {
                     width: 84px;
@@ -126,6 +158,7 @@ component ProductsPage inherits Rectangle {
                     Text { text: "COST"; color: Theme.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; horizontal-alignment: right; width: 110px; }
                     Text { text: "PRICE"; color: Theme.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; horizontal-alignment: right; width: 110px; }
                     Text { text: "TAGS"; color: Theme.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; horizontal-alignment: center; width: 120px; }
+                    Text { text: "ACTIONS"; color: Theme.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; horizontal-alignment: center; width: 120px; }
                 }
             }
 
@@ -158,8 +191,31 @@ component ProductsPage inherits Rectangle {
                                 horizontal-alignment: center;
                                 width: 120px;
                             }
+                            Rectangle {
+                                width: 120px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: center;
+                                    SmallButton {
+                                        width: 52px;
+                                        y: (parent.height - self.height) / 2;
+                                        text: "Edit";
+                                        tone: Ink.amber-text;
+                                        hover-bg: #FFF4DE;
+                                        clicked => { root.edit-product(r.id); }
+                                    }
+                                    SmallButton {
+                                        width: 56px;
+                                        y: (parent.height - self.height) / 2;
+                                        text: "Delete";
+                                        tone: Theme.red;
+                                        hover-bg: Theme.red-light;
+                                        clicked => { root.delete-product(r.id); }
+                                    }
+                                }
+                            }
                         }
-                        row-touch := TouchArea { }
+                        row-touch := TouchArea { double-clicked => { root.edit-product(r.id); } }
                     }
                 }
                 if root.rows.length == 0 : Text {
@@ -232,6 +288,37 @@ export component SupervisorWindow inherits Window {
     in property <bool> loading;
     in property <string> empty-text;
     in property <string> error-text;
+
+    // Add / Edit Product dialog (pos-app/src/product_form.rs fills these in)
+    in property <bool> form-open;
+    in property <string> form-title;
+    in property <bool> form-editing;
+    in property <string> form-notice;
+    in-out property <string> form-barcode;
+    in-out property <string> form-name;
+    in-out property <string> form-cost;
+    in property <[string]> form-group-names;
+    in-out property <int> form-group-index;
+    in-out property <bool> form-gct: true;
+    in property <string> form-price-text;
+    in property <string> form-price-hint;
+    in property <string> form-error;
+
+    // Yes/No question (or a plain notice when confirm-cancel-visible is false); open while the title is set.
+    in property <string> confirm-title;
+    in property <string> confirm-message;
+    in property <string> confirm-button: "Yes";
+    in property <bool> confirm-cancel-visible: true;
+
+    callback add-product();
+    callback edit-product(int);
+    callback delete-product(int);
+    callback form-changed();
+    callback form-save();
+    callback form-cancel();
+    callback form-delete();
+    callback confirmed();
+    callback cancelled();
 
     callback logout();
     callback area-selected(string);
@@ -321,6 +408,9 @@ export component SupervisorWindow inherits Window {
                 refresh => { root.refresh(); }
                 prev-page => { root.prev-page(); }
                 next-page => { root.next-page(); }
+                add-product => { root.add-product(); }
+                edit-product(id) => { root.edit-product(id); }
+                delete-product(id) => { root.delete-product(id); }
             }
             if !(root.current-page == "products" && root.page-built) : Rectangle {
                 width: parent.width;
@@ -346,6 +436,55 @@ export component SupervisorWindow inherits Window {
                     font-size: 13px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    if root.form-open : ProductForm {
+        width: parent.width;
+        height: parent.height;
+        title: root.form-title;
+        editing: root.form-editing;
+        notice: root.form-notice;
+        barcode <=> root.form-barcode;
+        name <=> root.form-name;
+        cost <=> root.form-cost;
+        group-names: root.form-group-names;
+        group-index <=> root.form-group-index;
+        gct <=> root.form-gct;
+        price-text: root.form-price-text;
+        price-hint: root.form-price-hint;
+        error-text: root.form-error;
+        changed => { root.form-changed(); }
+        save => { root.form-save(); }
+        cancel => { root.form-cancel(); }
+        delete => { root.form-delete(); }
+    }
+
+    if root.confirm-title != "" : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #00000066;
+        TouchArea { }
+        Rectangle {
+            width: 400px;
+            height: confirm-card.preferred-height;
+            background: white;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.border;
+            confirm-card := VerticalLayout {
+                padding: 20px;
+                spacing: 10px;
+                Text { text: root.confirm-title; font-size: 15px; font-weight: 700; color: Theme.text; }
+                Text { text: root.confirm-message; font-size: 13px; color: Theme.label; wrap: word-wrap; }
+                Rectangle { height: 6px; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    if root.confirm-cancel-visible : OutlineButton { width: 100px; text: "Cancel"; clicked => { root.cancelled(); } }
+                    AmberButton { width: 110px; height: 40px; text: root.confirm-button; clicked => { root.confirmed(); } }
                 }
             }
         }

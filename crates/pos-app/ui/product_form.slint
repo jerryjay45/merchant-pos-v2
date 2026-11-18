@@ -1,0 +1,187 @@
+// Add / Edit Product dialog (ui/supervisor/product_dialog.py), standalone products so far:
+// identity (barcode, name), pricing (cost + product-group markup -> selling price) and the GCT
+// flag. Alias / variant groups, case items and discounts come in later steps.
+
+import { ComboBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { AmberButton, OutlineButton, Field, FieldLabel, CheckRow } from "widgets.slint";
+
+export component ProductForm inherits Rectangle {
+    in property <string> title;
+    in property <bool> editing;
+    /// Non-empty: this product can't be edited here yet; the text says why.
+    in property <string> notice;
+    in-out property <string> barcode;
+    in-out property <string> name;
+    in-out property <string> cost;
+    in property <[string]> group-names;
+    in-out property <int> group-index;
+    in-out property <bool> gct: true;
+    in property <string> price-text;
+    in property <string> price-hint;
+    in property <string> error-text;
+
+    /// Cost text or group changed: the window recalculates the price.
+    callback changed();
+    callback save();
+    callback cancel();
+    callback delete();
+
+    background: #00000066;
+    TouchArea { }   // swallow clicks on the page underneath
+
+    init => { barcode-field.focus-input(); }
+
+    Rectangle {
+        width: min(560px, parent.width - 40px);
+        height: card.preferred-height;
+        background: white;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Theme.border;
+        clip: true;
+
+        card := VerticalLayout {
+            // title bar
+            Rectangle {
+                height: 48px;
+                background: Theme.dark;
+                Rectangle { y: parent.height - 2px; height: 2px; background: Theme.accent; }
+                Text {
+                    x: 20px;
+                    text: root.title;
+                    color: white;
+                    font-size: 15px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                padding: 20px;
+                padding-top: 14px;
+                spacing: 6px;
+
+                if root.notice != "" : Rectangle {
+                    background: #FFF4DE;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                    height: notice-text.preferred-height + 20px;
+                    notice-text := Text {
+                        x: 12px;
+                        y: 10px;
+                        width: parent.width - 24px;
+                        text: root.notice;
+                        color: #6B4309;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                FieldLabel { text: "Barcode *"; }
+                barcode-field := Field {
+                    text <=> root.barcode;
+                    placeholder: "Scan or type barcode";
+                    force-upper: true;
+                    active: root.notice == "";
+                    accepted => { name-field.focus-input(); }
+                }
+                FieldLabel { text: "Name *"; }
+                name-field := Field {
+                    text <=> root.name;
+                    placeholder: "e.g. COCA COLA 330ML";
+                    force-upper: true;
+                    active: root.notice == "";
+                    accepted => { cost-field.focus-input(); }
+                }
+
+                Rectangle { height: 4px; }
+                FieldLabel { text: "Cost"; }
+                cost-field := Field {
+                    text <=> root.cost;
+                    placeholder: "0.00";
+                    active: root.notice == "";
+                    edited(t) => { root.changed(); }
+                    accepted => { root.save(); }
+                }
+                FieldLabel { text: "Selling Price"; }
+                Rectangle {
+                    height: 36px;
+                    background: Theme.green-light;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: Theme.green-border;
+                    Text {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        text: root.price-text == "" ? "Enter a cost above to calculate" : root.price-text;
+                        color: root.price-text == "" ? Theme.muted : Theme.green;
+                        font-size: root.price-text == "" ? 12px : 14px;
+                        font-weight: root.price-text == "" ? 500 : 700;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: root.price-hint;
+                    color: Theme.muted;
+                    font-size: 10px;
+                    visible: root.price-hint != "";
+                    height: root.price-hint == "" ? 0px : self.preferred-height;
+                }
+
+                FieldLabel { text: "Product Group"; }
+                ComboBox {
+                    model: root.group-names;
+                    current-index <=> root.group-index;
+                    enabled: root.notice == "";
+                    selected(v) => { root.changed(); }
+                }
+
+                CheckRow {
+                    text: "GCT Applicable";
+                    checked <=> root.gct;
+                }
+
+                if root.error-text != "" : Text {
+                    text: root.error-text;
+                    color: Theme.red;
+                    font-size: 12px;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                }
+
+                Rectangle { height: 4px; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    if root.editing : Rectangle {
+                        width: 90px;
+                        height: 40px;
+                        border-radius: 8px;
+                        border-width: 1.5px;
+                        border-color: Theme.red-border;
+                        background: del-touch.has-hover ? Theme.red-light : transparent;
+                        Text {
+                            text: "Delete";
+                            color: Theme.red;
+                            font-size: 12px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        del-touch := TouchArea { clicked => { root.delete(); } }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    OutlineButton { width: 100px; text: "Cancel"; clicked => { root.cancel(); } }
+                    AmberButton {
+                        width: 120px;
+                        height: 40px;
+                        text: "Save";
+                        active: root.notice == "";
+                        clicked => { root.save(); }
+                    }
+                }
+            }
+        }
+    }
+}

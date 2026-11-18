@@ -10,7 +10,7 @@ use pos_core::{
 use pos_db::{ConfigDb, ProductsDb};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::{NavItem, ProductRowData, SupervisorWindow};
+use crate::{product_form, NavItem, ProductRowData, SupervisorWindow};
 
 const PAGE_SIZE: u32 = 50; // same as the Python list
 
@@ -39,6 +39,7 @@ fn nav_model(items: impl IntoIterator<Item = (&'static str, &'static str)>) -> M
 fn row_data(r: &ProductRow, currency: &str) -> ProductRowData {
     let tags = r.tags();
     ProductRowData {
+        id: i32::try_from(r.id).unwrap_or(i32::MAX),
         name: r.name.as_str().into(),
         barcode: r.barcode.as_str().into(),
         cost: format_money(r.cost_cents, currency).into(),
@@ -212,12 +213,23 @@ pub fn open(user: &User, ctx: Arc<Ctx>, on_logout: impl Fn() + 'static) -> Resul
         s.lock().unwrap().pager.prev();
         load(&win, &c, &s);
     });
-    let (weak, c, s) = (win.as_weak(), ctx, state);
+    let (weak, c, s) = (win.as_weak(), ctx.clone(), state.clone());
     win.on_next_page(move || {
         let Some(win) = weak.upgrade() else { return };
         s.lock().unwrap().pager.next();
         load(&win, &c, &s);
     });
+
+    // Add / Edit / Delete: after a change the list reloads (same search and page).
+    let reload: std::rc::Rc<dyn Fn()> = {
+        let (weak, c, s) = (win.as_weak(), ctx.clone(), state.clone());
+        std::rc::Rc::new(move || {
+            if let Some(win) = weak.upgrade() {
+                load(&win, &c, &s);
+            }
+        })
+    };
+    product_form::wire(&win, ctx, reload);
 
     win.on_logout(on_logout);
     Ok(win)

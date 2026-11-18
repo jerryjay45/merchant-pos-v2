@@ -5,6 +5,7 @@ pub mod auth;
 pub mod money;
 pub mod nav;
 pub mod product;
+pub mod product_edit;
 pub mod repo;
 pub mod setup;
 pub mod user;
@@ -16,3 +17,7 @@ pub use money::{format_money, to_cents};
 pub use nav::{areas_for, Area, Page};
 pub use product::{Membership, Pager, ProductPage, ProductQuery, ProductRepository, ProductRow};
 pub use user::{Role, User, UserRecord};
+pub use product_edit::{
+    parse_cost, price_from_markup, price_hint, warnings_for_edit, Group, ProductDetail, ProductDraft, ProductError,
+    ProductWarning, ProductWrite, UpdateOutcome,
+};

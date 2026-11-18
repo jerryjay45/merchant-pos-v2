@@ -16,6 +16,7 @@ use pos_core::{
 use pos_db::{ConfigDb, ProductsDb, UsersDb};
 use slint::ComponentHandle;
 
+mod product_form;
 mod supervisor;
 
 slint::include_modules!();

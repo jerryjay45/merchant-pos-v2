@@ -3,7 +3,10 @@
 
 use std::sync::Arc;
 
-use crate::repo::StorageError;
+use crate::{
+    product_edit::{Group, ProductDetail, ProductError, ProductWrite, UpdateOutcome},
+    repo::StorageError,
+};
 
 /// How a product gets its price and stock. A product is at most one of these (the products table
 /// has a CHECK for it), and the list shows the group's values for a grouped product, not the
@@ -66,11 +69,38 @@ pub struct ProductPage {
 
 pub trait ProductRepository: Send + Sync {
     fn list(&self, query: &ProductQuery) -> Result<ProductPage, StorageError>;
+
+    /// One product with its own stored values (`None` if it doesn't exist).
+    fn get(&self, id: i64) -> Result<Option<ProductDetail>, StorageError>;
+    /// Product groups (name order) with their markups, for the Product Group dropdown.
+    fn groups(&self) -> Result<Vec<Group>, StorageError>;
+    /// Adds a standalone product; returns its id.
+    fn add(&self, product: &ProductWrite) -> Result<i64, ProductError>;
+    /// Saves an edit of a standalone product. When the cost changed, the case products linked to
+    /// it are recalculated in the same transaction (`case_profit_pct`, default 10 %).
+    fn update(&self, id: i64, product: &ProductWrite, case_profit_pct: f64) -> Result<UpdateOutcome, ProductError>;
+    /// Returns false when the product doesn't exist.
+    fn delete(&self, id: i64) -> Result<bool, StorageError>;
 }
 
 impl<T: ProductRepository + ?Sized> ProductRepository for Arc<T> {
     fn list(&self, q: &ProductQuery) -> Result<ProductPage, StorageError> {
         (**self).list(q)
+    }
+    fn get(&self, id: i64) -> Result<Option<ProductDetail>, StorageError> {
+        (**self).get(id)
+    }
+    fn groups(&self) -> Result<Vec<Group>, StorageError> {
+        (**self).groups()
+    }
+    fn add(&self, p: &ProductWrite) -> Result<i64, ProductError> {
+        (**self).add(p)
+    }
+    fn update(&self, id: i64, p: &ProductWrite, pct: f64) -> Result<UpdateOutcome, ProductError> {
+        (**self).update(id, p, pct)
+    }
+    fn delete(&self, id: i64) -> Result<bool, StorageError> {
+        (**self).delete(id)
     }
 }
 

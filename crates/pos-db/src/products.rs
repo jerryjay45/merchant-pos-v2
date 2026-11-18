@@ -6,9 +6,10 @@ use std::{path::Path, sync::Mutex};
 use pos_core::{
     money::to_cents,
     product::{Membership, ProductPage, ProductQuery, ProductRepository, ProductRow},
+    product_edit::{Group, ProductDetail, ProductError, ProductWrite, UpdateOutcome},
     repo::StorageError,
 };
-use rusqlite::{params_from_iter, types::Value, Connection};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
 
 use crate::{configure, storage};
 
@@ -163,6 +164,133 @@ impl ProductRepository for ProductsDb {
 
         Ok(ProductPage { rows, total: total.max(0) as u64 })
     }
+
+    fn get(&self, id: i64) -> Result<Option<ProductDetail>, StorageError> {
+        let conn = self.conn.lock().map_err(storage)?;
+        get_detail(&conn, id).map_err(storage)
+    }
+
+    fn groups(&self) -> Result<Vec<Group>, StorageError> {
+        let conn = self.conn.lock().map_err(storage)?;
+        let mut stmt = conn.prepare("SELECT id, name, profit_margin FROM groups ORDER BY name").map_err(storage)?;
+        let rows = stmt
+            .query_map([], |r| Ok(Group { id: r.get(0)?, name: r.get(1)?, markup: r.get(2)? }))
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        Ok(rows)
+    }
+
+    fn add(&self, p: &ProductWrite) -> Result<i64, ProductError> {
+        let conn = self.conn.lock().map_err(storage)?;
+        conn.execute(
+            "INSERT INTO products (barcode, name, cost, selling_price, group_id, gct_applicable)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![p.barcode, p.name, dollars(p.cost_cents), dollars(p.price_cents), p.group_id, p.gct as i64],
+        )
+        .map_err(|e| write_error(e, &p.barcode))?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn update(&self, id: i64, p: &ProductWrite, case_profit_pct: f64) -> Result<UpdateOutcome, ProductError> {
+        let mut conn = self.conn.lock().map_err(storage)?;
+        let tx = conn.transaction().map_err(storage)?;
+        let before = get_detail(&tx, id).map_err(storage)?.ok_or(ProductError::NotFound)?;
+        if before.membership != Membership::Standalone {
+            return Err(ProductError::Invalid(
+                "Products in an alias or variant group, and case items, can't be edited here yet.".into(),
+            ));
+        }
+        tx.execute(
+            "UPDATE products SET barcode = ?1, name = ?2, cost = ?3, selling_price = ?4, group_id = ?5,
+                    gct_applicable = ?6, updated_at = datetime('now', 'localtime')
+             WHERE id = ?7",
+            params![p.barcode, p.name, dollars(p.cost_cents), dollars(p.price_cents), p.group_id, p.gct as i64, id],
+        )
+        .map_err(|e| write_error(e, &p.barcode))?;
+
+        // A changed single-product cost flows to its cases (cascade_single_cost_to_cases in Python).
+        let mut cases_updated = 0;
+        if before.cost_cents != p.cost_cents && p.cost_cents > 0 {
+            let cases: Vec<(i64, Option<i64>)> = {
+                let mut stmt = tx
+                    .prepare("SELECT id, case_qty FROM products WHERE is_case = 1 AND case_product_id = ?1")
+                    .map_err(storage)?;
+                let rows = stmt
+                    .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map_err(storage)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(storage)?;
+                rows
+            };
+            for (case_id, qty) in cases {
+                let case_cost = (dollars(p.cost_cents) * qty.unwrap_or(1).max(1) as f64 * 1e4).round() / 1e4;
+                let case_price = (case_cost * (1.0 + case_profit_pct) * 100.0).round() / 100.0;
+                tx.execute(
+                    "UPDATE products SET cost = ?1, selling_price = ?2, updated_at = datetime('now', 'localtime')
+                     WHERE id = ?3",
+                    params![case_cost, case_price, case_id],
+                )
+                .map_err(storage)?;
+                cases_updated += 1;
+            }
+        }
+        tx.commit().map_err(storage)?;
+        Ok(UpdateOutcome { cases_updated })
+    }
+
+    fn delete(&self, id: i64) -> Result<bool, StorageError> {
+        let conn = self.conn.lock().map_err(storage)?;
+        conn.execute("DELETE FROM products WHERE id = ?1", [id]).map(|n| n > 0).map_err(storage)
+    }
+}
+
+fn dollars(cents: i64) -> f64 {
+    cents as f64 / 100.0
+}
+
+/// A UNIQUE failure on the barcode becomes its own error so the form can say so.
+fn write_error(e: rusqlite::Error, barcode: &str) -> ProductError {
+    if let rusqlite::Error::SqliteFailure(f, msg) = &e {
+        let unique_barcode = f.code == rusqlite::ErrorCode::ConstraintViolation
+            && msg.as_deref().is_some_and(|m| m.contains("UNIQUE") && m.contains("barcode"));
+        if unique_barcode {
+            return ProductError::DuplicateBarcode(barcode.to_string());
+        }
+    }
+    ProductError::Storage(storage(e))
+}
+
+fn get_detail(conn: &Connection, id: i64) -> rusqlite::Result<Option<ProductDetail>> {
+    conn.query_row(
+        "SELECT p.id, p.barcode, p.name, p.group_id, p.cost, p.selling_price, p.gct_applicable,
+                p.is_case, ag.name, vg.name
+         FROM products p
+         LEFT JOIN alias_groups   ag ON ag.id = p.alias_group_id
+         LEFT JOIN variant_groups vg ON vg.id = p.variant_group_id
+         WHERE p.id = ?1",
+        [id],
+        |r| {
+            let (alias, variant): (Option<String>, Option<String>) = (r.get(8)?, r.get(9)?);
+            let membership = match (variant, alias, r.get::<_, i64>(7)? != 0) {
+                (Some(v), _, _) => Membership::Variant(v),
+                (None, Some(a), _) => Membership::Alias(a),
+                (None, None, true) => Membership::Case,
+                _ => Membership::Standalone,
+            };
+            Ok(ProductDetail {
+                id: r.get(0)?,
+                barcode: r.get(1)?,
+                name: r.get(2)?,
+                group_id: r.get(3)?,
+                cost_cents: to_cents(r.get::<_, f64>(4)?),
+                price_cents: to_cents(r.get::<_, f64>(5)?),
+                gct: r.get::<_, i64>(6)? != 0,
+                membership,
+            })
+        },
+    )
+    .optional()
 }
 
 #[cfg(test)]
@@ -328,5 +456,100 @@ mod tests {
             }
         }
         std::fs::write(out, text).unwrap();
+    }
+
+    // ── add / edit / delete ──
+
+    fn write(barcode: &str, name: &str, cost: i64, price: i64, group: Option<i64>) -> ProductWrite {
+        ProductWrite { barcode: barcode.into(), name: name.into(), cost_cents: cost, price_cents: price, group_id: group, gct: true }
+    }
+
+    #[test]
+    fn add_then_get_roundtrip_and_appears_in_the_list() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        let id = db.add(&write("111", "MILK 1L", 12_050, 15_000, None)).unwrap();
+        let p = db.get(id).unwrap().unwrap();
+        assert_eq!((p.barcode.as_str(), p.name.as_str(), p.cost_cents, p.price_cents, p.gct), ("111", "MILK 1L", 12_050, 15_000, true));
+        assert_eq!(p.membership, Membership::Standalone);
+        assert_eq!(db.list(&ProductQuery { search: "milk".into(), limit: 10, offset: 0 }).unwrap().total, 1, "search index follows the insert");
+        assert_eq!(db.get(9999).unwrap(), None);
+    }
+
+    #[test]
+    fn duplicate_barcode_is_its_own_error() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        db.add(&write("111", "A", 100, 100, None)).unwrap();
+        assert_eq!(db.add(&write("111", "B", 100, 100, None)), Err(ProductError::DuplicateBarcode("111".into())));
+        let other = db.add(&write("222", "B", 100, 100, None)).unwrap();
+        assert_eq!(db.update(other, &write("111", "B", 100, 100, None), 0.10), Err(ProductError::DuplicateBarcode("111".into())));
+    }
+
+    #[test]
+    fn groups_are_listed_by_name_with_their_markup() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        db.with_conn(|c| c.execute_batch("INSERT INTO groups (name, profit_margin) VALUES ('MEATS', 0.35), ('GENERAL', 0.25);")).unwrap();
+        let g = db.groups().unwrap();
+        assert_eq!(g.iter().map(|g| (g.name.as_str(), g.markup)).collect::<Vec<_>>(), [("GENERAL", 0.25), ("MEATS", 0.35)]);
+    }
+
+    #[test]
+    fn edit_changes_the_product_and_the_search_index() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        let id = db.add(&write("111", "MILK 1L", 12_000, 15_000, None)).unwrap();
+        let out = db.update(id, &write("999", "OAT MILK", 13_000, 16_900, None), 0.10).unwrap();
+        assert_eq!(out.cases_updated, 0);
+        let p = db.get(id).unwrap().unwrap();
+        assert_eq!((p.barcode.as_str(), p.name.as_str(), p.cost_cents, p.price_cents), ("999", "OAT MILK", 13_000, 16_900));
+        let q = |s: &str| db.list(&ProductQuery { search: s.into(), limit: 10, offset: 0 }).unwrap().total;
+        assert_eq!((q("oat"), q("milk 1l"), q("999"), q("111")), (1, 0, 1, 0));
+        assert_eq!(db.update(4242, &write("1", "X", 1, 1, None), 0.10), Err(ProductError::NotFound));
+    }
+
+    #[test]
+    fn a_cost_change_flows_to_linked_cases_only_when_the_cost_changes() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        let single = db.add(&write("111", "COLA", 100, 150, None)).unwrap();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO products (barcode, name, cost, selling_price, is_case, case_qty, case_product_id)
+                 VALUES ('111C', 'COLA CASE', 24.0, 26.4, 1, 24, ?1)",
+                [single],
+            )
+        })
+        .unwrap();
+        // name-only edit: the case is left alone
+        assert_eq!(db.update(single, &write("111", "COLA 330", 100, 150, None), 0.10).unwrap().cases_updated, 0);
+        // cost 1.00 -> 1.50: case = 24 x 1.50 = 36.00, price = 36.00 x 1.10 = 39.60
+        assert_eq!(db.update(single, &write("111", "COLA 330", 150, 225, None), 0.10).unwrap().cases_updated, 1);
+        let (cost, price): (f64, f64) =
+            db.with_conn(|c| c.query_row("SELECT cost, selling_price FROM products WHERE barcode='111C'", [], |r| Ok((r.get(0)?, r.get(1)?)))).unwrap();
+        assert_eq!((cost, price), (36.0, 39.6));
+    }
+
+    #[test]
+    fn grouped_and_case_products_are_not_editable_yet() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        db.with_conn(|c| {
+            c.execute_batch(
+                "INSERT INTO alias_groups (name, cost, selling_price) VALUES ('SODA', 1, 2);
+                 INSERT INTO products (barcode, name, alias_group_id) VALUES ('A1', 'FANTA', 1);
+                 INSERT INTO products (barcode, name, is_case, case_qty) VALUES ('C1', 'BOX', 1, 6);",
+            )
+        })
+        .unwrap();
+        for barcode in ["A1", "C1"] {
+            let id: i64 = db.with_conn(|c| c.query_row("SELECT id FROM products WHERE barcode=?1", [barcode], |r| r.get(0))).unwrap();
+            assert!(matches!(db.update(id, &write(barcode, "NEW", 1, 1, None), 0.10), Err(ProductError::Invalid(_))), "{barcode}");
+            assert_eq!(db.get(id).unwrap().unwrap().name != "NEW", true);
+        }
+    }
+
+    #[test]
+    fn delete_removes_the_product_and_its_search_entry() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        let id = db.add(&write("111", "MILK", 1, 1, None)).unwrap();
+        assert!(db.delete(id).unwrap());
+        assert!(!db.delete(id).unwrap());
+        assert_eq!(db.list(&ProductQuery { search: "milk".into(), limit: 10, offset: 0 }).unwrap().total, 0);
     }
 }
