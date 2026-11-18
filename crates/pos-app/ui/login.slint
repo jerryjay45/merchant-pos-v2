@@ -100,7 +100,7 @@ export component LoginWindow inherits Window {
                         placeholder: "Enter your username";
                         active: !root.busy;
                         ui-scale: root.s;
-                        accepted => { root.submit(); }
+                        accepted => { pass-field.focus-input(); }
                         edited(t) => { root.username-edited(t); }
                     }
                     Rectangle { height: 12px * root.s; }
