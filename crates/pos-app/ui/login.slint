@@ -34,6 +34,7 @@ export component LoginWindow inherits Window {
     callback password-edited(string);
 
     init => { user-field.focus-input(); }
+    public function focus-username() { user-field.focus-input(); }
 
     VerticalLayout {
         alignment: center;

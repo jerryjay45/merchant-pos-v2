@@ -9,6 +9,19 @@ pub enum Role {
 }
 
 impl Role {
+    /// cashier < supervisor < manager. A page that needs `Supervisor` is open to managers too.
+    pub fn rank(self) -> u8 {
+        match self {
+            Role::Cashier => 0,
+            Role::Supervisor => 1,
+            Role::Manager => 2,
+        }
+    }
+
+    pub fn can_open(self, min_role: Role) -> bool {
+        self.rank() >= min_role.rank()
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Role::Cashier => "cashier",

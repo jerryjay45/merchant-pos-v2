@@ -2,6 +2,9 @@
 //! everything the UI needs goes through the types and traits in this crate.
 
 pub mod auth;
+pub mod money;
+pub mod nav;
+pub mod product;
 pub mod repo;
 pub mod setup;
 pub mod user;
@@ -9,4 +12,7 @@ pub mod user;
 pub use auth::{check_session_gate, new_password_hash, verify_password, AuthError, AuthService};
 pub use repo::{Business, BusinessInfo, ConfigRepository, SessionRepository, StorageError, UserRepository};
 pub use setup::{needs_setup, run_setup, SetupData, SetupError};
+pub use money::{format_money, to_cents};
+pub use nav::{areas_for, Area, Page};
+pub use product::{Membership, Pager, ProductPage, ProductQuery, ProductRepository, ProductRow};
 pub use user::{Role, User, UserRecord};
