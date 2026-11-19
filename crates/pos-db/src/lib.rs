@@ -2,6 +2,9 @@
 //! File layout matches the Python app: `<data dir>/users.db` and `<data dir>/config.db`,
 //! so the Rust app can be pointed at an existing data folder.
 
+mod products;
+pub use products::ProductsDb;
+
 use std::{path::Path, sync::Mutex};
 
 use pos_core::{
@@ -10,11 +13,11 @@ use pos_core::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
-fn storage<E: std::fmt::Display>(e: E) -> StorageError {
+pub(crate) fn storage<E: std::fmt::Display>(e: E) -> StorageError {
     StorageError(e.to_string())
 }
 
-fn configure(conn: &Connection) -> Result<(), StorageError> {
+pub(crate) fn configure(conn: &Connection) -> Result<(), StorageError> {
     // journal_mode returns a row, so it has to go through query_row.
     let _ = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0));
     conn.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")

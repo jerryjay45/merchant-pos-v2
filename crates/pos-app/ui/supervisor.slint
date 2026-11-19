@@ -1,0 +1,563 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Field, OutlineButton, AmberButton } from "widgets.slint";
+import { ProductForm } from "product_form.slint";
+import { GroupChooser } from "group_chooser.slint";
+
+// Supervisor / manager window: areas across the top, pages inside each area, the page below.
+// Same structure as the Python app (Sales / Inventory / Printing / Data / Setup). The areas and
+// pages themselves come from pos-core (`nav.rs`), so what each role sees lives in one place.
+
+export struct NavItem {
+    key: string,
+    title: string,
+}
+
+export struct ProductRowData {
+    id: int,
+    name: string,
+    barcode: string,
+    cost: string,
+    price: string,
+    tags: string,
+}
+
+// Amber that stays readable as small text on white (the plain accent is only ~2.2:1).
+global Ink {
+    out property <color> amber-text: #955E12;
+}
+
+component TabButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    in property <bool> small: false;
+    callback clicked();
+
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        background: root.selected ? Theme.accent : transparent;
+    }
+    HorizontalLayout {
+        padding-left: root.small ? 16px : 22px;
+        padding-right: root.small ? 16px : 22px;
+        Text {
+            text: root.text;
+            font-size: root.small ? 12px : 14px;
+            font-weight: root.selected ? 700 : 600;
+            color: root.selected || touch.has-hover ? Theme.text : Theme.label;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component SmallButton inherits Rectangle {
+    in property <string> text;
+    in property <color> tone;
+    in property <color> hover-bg;
+    callback clicked();
+    height: 26px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: root.tone;
+    background: touch.has-hover ? root.hover-bg : transparent;
+    Text {
+        text: root.text;
+        font-size: 12px;
+        font-weight: 600;
+        color: root.tone;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+component ProductsPage inherits Rectangle {
+    in property <[ProductRowData]> rows;
+    in-out property <string> search-text <=> search.text;
+    in property <string> page-label;
+    in property <string> range-label;
+    in property <bool> can-prev;
+    in property <bool> can-next;
+    in property <bool> loading;
+    in property <string> empty-text;
+    in property <string> error-text;
+    callback search(string);
+    callback clear-search();
+    callback refresh();
+    callback prev-page();
+    callback next-page();
+    callback add-product();
+    callback edit-product(int);
+    callback delete-product(int);
+
+    background: Theme.warm-white;
+
+    Rectangle {
+        x: 10px;
+        y: 10px;
+        width: parent.width - 20px;
+        height: parent.height - 20px;
+        background: white;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+
+            // search + actions
+            HorizontalLayout {
+                spacing: 6px;
+                search := Field {
+                    horizontal-stretch: 1;
+                    height: 36px;
+                    placeholder: "Search by name, barcode, alias or group…";
+                    accepted => { root.search(self.text); }
+                }
+                AmberButton {
+                    width: 130px;
+                    height: 36px;
+                    text: "+  Add Product";
+                    clicked => { root.add-product(); }
+                }
+                OutlineButton {
+                    width: 84px;
+                    height: 36px;
+                    text: "Search";
+                    clicked => { root.search(search.text); }
+                }
+                OutlineButton {
+                    width: 70px;
+                    height: 36px;
+                    text: "Clear";
+                    clicked => { root.clear-search(); }
+                }
+                OutlineButton {
+                    width: 90px;
+                    height: 36px;
+                    text: "↻  Refresh";
+                    clicked => { root.refresh(); }
+                }
+            }
+
+            // column headings
+            Rectangle {
+                height: 34px;
+                background: Theme.dark;
+                border-radius: 4px;
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 10px;
+                    Text { text: "NAME"; color: Theme.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                    Text { text: "BARCODE"; color: Theme.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; width: 170px; }
+                    Text { text: "COST"; color: Theme.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; horizontal-alignment: right; width: 110px; }
+                    Text { text: "PRICE"; color: Theme.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; horizontal-alignment: right; width: 110px; }
+                    Text { text: "TAGS"; color: Theme.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; horizontal-alignment: center; width: 120px; }
+                    Text { text: "ACTIONS"; color: Theme.accent; font-size: 11px; font-weight: 700; vertical-alignment: center; horizontal-alignment: center; width: 120px; }
+                }
+            }
+
+            // the list
+            Rectangle {
+                vertical-stretch: 1;
+                ListView {
+                    for r in root.rows : Rectangle {
+                        height: 36px;
+                        background: row-touch.has-hover ? #FFF8E8 : transparent;
+                        // First child = underneath, so the Edit / Delete buttons above it get their clicks.
+                        row-touch := TouchArea { double-clicked => { root.edit-product(r.id); } }
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: Theme.border-light;
+                        }
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 10px;
+                            Text { text: r.name; color: Theme.text; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                            Text { text: r.barcode; color: Theme.muted; font-size: 13px; vertical-alignment: center; overflow: elide; width: 170px; }
+                            Text { text: r.cost; color: Ink.amber-text; font-size: 13px; vertical-alignment: center; horizontal-alignment: right; width: 110px; }
+                            Text { text: r.price; color: Theme.green; font-size: 13px; font-weight: 600; vertical-alignment: center; horizontal-alignment: right; width: 110px; }
+                            Text {
+                                text: r.tags;
+                                color: r.tags == "—" ? Theme.muted : Ink.amber-text;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                                width: 120px;
+                            }
+                            Rectangle {
+                                width: 120px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: center;
+                                    SmallButton {
+                                        width: 52px;
+                                        y: (parent.height - self.height) / 2;
+                                        text: "Edit";
+                                        tone: Ink.amber-text;
+                                        hover-bg: #FFF4DE;
+                                        clicked => { root.edit-product(r.id); }
+                                    }
+                                    SmallButton {
+                                        width: 56px;
+                                        y: (parent.height - self.height) / 2;
+                                        text: "Delete";
+                                        tone: Theme.red;
+                                        hover-bg: Theme.red-light;
+                                        clicked => { root.delete-product(r.id); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.rows.length == 0 : Text {
+                    text: root.error-text != "" ? root.error-text : root.empty-text;
+                    color: root.error-text != "" ? Theme.red : Theme.muted;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                    wrap: word-wrap;
+                }
+            }
+
+            // paging
+            HorizontalLayout {
+                spacing: 10px;
+                height: 36px;
+                Rectangle { horizontal-stretch: 1; }
+                OutlineButton {
+                    width: 84px;
+                    height: 34px;
+                    text: "← Prev";
+                    active: root.can-prev;
+                    clicked => { root.prev-page(); }
+                }
+                VerticalLayout {
+                    width: 260px;
+                    alignment: center;
+                    Text { text: root.page-label; color: Theme.label; font-size: 12px; font-weight: 600; horizontal-alignment: center; }
+                    Text { text: root.loading ? "Loading…" : root.range-label; color: Theme.muted; font-size: 11px; horizontal-alignment: center; }
+                }
+                OutlineButton {
+                    width: 84px;
+                    height: 34px;
+                    text: "Next →";
+                    active: root.can-next;
+                    clicked => { root.next-page(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+    }
+}
+
+export component SupervisorWindow inherits Window {
+    title: "POS System";
+    min-width: 1280px;
+    min-height: 720px;
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    background: Theme.warm-white;
+
+    in property <string> role-text;
+    in property <string> user-name;
+    in property <[NavItem]> areas;
+    in property <[NavItem]> pages;
+    in property <string> current-area;
+    in property <string> current-page;
+    in property <bool> page-built;
+    in property <string> page-title;
+
+    // Products page
+    in property <[ProductRowData]> rows;
+    in-out property <string> search-text;
+    in property <string> page-label;
+    in property <string> range-label;
+    in property <bool> can-prev;
+    in property <bool> can-next;
+    in property <bool> loading;
+    in property <string> empty-text;
+    in property <string> error-text;
+
+    // Add / Edit Product dialog (pos-app/src/product_form.rs fills these in)
+    in property <bool> form-open;
+    in property <string> form-title;
+    in property <bool> form-editing;
+    in property <string> form-notice;
+    in-out property <string> form-barcode;
+    in-out property <string> form-name;
+    in-out property <string> form-cost;
+    in property <[string]> form-group-names;
+    in-out property <int> form-group-index;
+    in-out property <bool> form-gct: true;
+    in property <string> form-alias-name;
+    in property <string> form-variant-name;
+    in property <[string]> form-discount-options;
+    in property <int> form-custom-index;
+    in-out property <int> form-d1-index;
+    in-out property <string> form-d1-qty;
+    in-out property <string> form-d1-pct;
+    in-out property <string> form-d1-from;
+    in-out property <string> form-d1-to;
+    in-out property <int> form-d2-index;
+    in-out property <string> form-d2-qty;
+    in-out property <string> form-d2-pct;
+    in-out property <string> form-d2-from;
+    in-out property <string> form-d2-to;
+    in-out property <bool> form-stack;
+    in property <string> form-discount-summary;
+    in property <string> form-price-text;
+    in property <string> form-price-hint;
+    in property <string> form-error;
+
+    // Alias / variant group chooser (opens over the dialog while chooser-title is set)
+    in property <string> chooser-title;
+    in-out property <string> chooser-search;
+    in property <[string]> chooser-items;
+    in property <string> chooser-current;
+    in property <string> chooser-create-text;
+    in property <string> chooser-error;
+
+    // Yes/No question (or a plain notice when confirm-cancel-visible is false); open while the title is set.
+    in property <string> confirm-title;
+    in property <string> confirm-message;
+    in property <string> confirm-button: "Yes";
+    in property <bool> confirm-cancel-visible: true;
+
+    callback add-product();
+    callback edit-product(int);
+    callback delete-product(int);
+    callback form-discount-changed();
+    callback form-pick-alias();
+    callback form-pick-variant();
+    callback chooser-searched(string);
+    callback chooser-submitted();
+    callback chooser-picked(int);
+    callback chooser-none();
+    callback chooser-create();
+    callback chooser-cancelled();
+    callback form-changed();
+    callback form-save();
+    callback form-cancel();
+    callback form-delete();
+    callback confirmed();
+    callback cancelled();
+
+    callback logout();
+    callback area-selected(string);
+    callback page-selected(string);
+    callback search(string);
+    callback clear-search();
+    callback refresh();
+    callback prev-page();
+    callback next-page();
+
+    VerticalLayout {
+        // top bar
+        Rectangle {
+            height: 44px;
+            background: Theme.dark;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 10px;
+                Text { text: "POS System"; color: white; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                Text { text: "|"; color: Theme.muted; font-size: 16px; vertical-alignment: center; }
+                Text { text: root.role-text + ":  " + root.user-name; color: white; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                Rectangle {
+                    width: 84px;
+                    height: 28px;
+                    y: 8px;
+                    border-radius: 14px;
+                    background: logout-touch.pressed ? Theme.accent-darker : logout-touch.has-hover ? Theme.accent-dark : Theme.accent;
+                    Text { text: "Logout"; color: Theme.dark; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                    logout-touch := TouchArea { clicked => { root.logout(); } }
+                }
+            }
+        }
+
+        // areas
+        Rectangle {
+            height: 42px;
+            background: white;
+            HorizontalLayout {
+                alignment: start;
+                for a in root.areas : TabButton {
+                    text: a.title;
+                    selected: a.key == root.current-area;
+                    clicked => { root.area-selected(a.key); }
+                }
+            }
+        }
+
+        // pages inside the area (hidden when an area has only one)
+        if root.pages.length > 1 : Rectangle {
+            height: 34px;
+            background: Theme.warm-white;
+            Rectangle {
+                y: 0px;
+                height: 1px;
+                background: Theme.border-light;
+            }
+            HorizontalLayout {
+                alignment: start;
+                for p in root.pages : TabButton {
+                    small: true;
+                    text: p.title;
+                    selected: p.key == root.current-page;
+                    clicked => { root.page-selected(p.key); }
+                }
+            }
+        }
+
+        // the page
+        Rectangle {
+            vertical-stretch: 1;
+            if root.current-page == "products" && root.page-built : ProductsPage {
+                width: parent.width;
+                height: parent.height;
+                rows: root.rows;
+                search-text <=> root.search-text;
+                page-label: root.page-label;
+                range-label: root.range-label;
+                can-prev: root.can-prev;
+                can-next: root.can-next;
+                loading: root.loading;
+                empty-text: root.empty-text;
+                error-text: root.error-text;
+                search(t) => { root.search(t); }
+                clear-search => { root.clear-search(); }
+                refresh => { root.refresh(); }
+                prev-page => { root.prev-page(); }
+                next-page => { root.next-page(); }
+                add-product => { root.add-product(); }
+                edit-product(id) => { root.edit-product(id); }
+                delete-product(id) => { root.delete-product(id); }
+            }
+            if !(root.current-page == "products" && root.page-built) : Rectangle {
+                width: parent.width;
+                height: parent.height;
+                background: Theme.warm-white;
+                Text {
+                    y: parent.height / 2 - 30px;
+                    width: parent.width;
+                    height: 26px;
+                    text: root.page-title;
+                    color: Theme.text;
+                    font-size: 18px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                Text {
+                    y: parent.height / 2 + 2px;
+                    width: parent.width;
+                    height: 22px;
+                    text: "This page is still in the Python app. It is next on the list for the Rust version.";
+                    color: Theme.muted;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    if root.form-open : ProductForm {
+        width: parent.width;
+        height: parent.height;
+        title: root.form-title;
+        editing: root.form-editing;
+        notice: root.form-notice;
+        barcode <=> root.form-barcode;
+        name <=> root.form-name;
+        cost <=> root.form-cost;
+        group-names: root.form-group-names;
+        group-index <=> root.form-group-index;
+        gct <=> root.form-gct;
+        alias-name: root.form-alias-name;
+        variant-name: root.form-variant-name;
+        pick-alias => { root.form-pick-alias(); }
+        pick-variant => { root.form-pick-variant(); }
+        discount-options: root.form-discount-options;
+        custom-index: root.form-custom-index;
+        d1-index <=> root.form-d1-index;
+        d1-qty <=> root.form-d1-qty;
+        d1-pct <=> root.form-d1-pct;
+        d1-from <=> root.form-d1-from;
+        d1-to <=> root.form-d1-to;
+        d2-index <=> root.form-d2-index;
+        d2-qty <=> root.form-d2-qty;
+        d2-pct <=> root.form-d2-pct;
+        d2-from <=> root.form-d2-from;
+        d2-to <=> root.form-d2-to;
+        stack <=> root.form-stack;
+        discount-summary: root.form-discount-summary;
+        discount-changed => { root.form-discount-changed(); }
+        price-text: root.form-price-text;
+        price-hint: root.form-price-hint;
+        error-text: root.form-error;
+        changed => { root.form-changed(); }
+        save => { root.form-save(); }
+        cancel => { root.form-cancel(); }
+        delete => { root.form-delete(); }
+    }
+
+    if root.chooser-title != "" : GroupChooser {
+        width: parent.width;
+        height: parent.height;
+        title: root.chooser-title;
+        search <=> root.chooser-search;
+        items: root.chooser-items;
+        current: root.chooser-current;
+        create-text: root.chooser-create-text;
+        error-text: root.chooser-error;
+        searched(t) => { root.chooser-searched(t); }
+        submitted => { root.chooser-submitted(); }
+        picked(i) => { root.chooser-picked(i); }
+        none => { root.chooser-none(); }
+        create => { root.chooser-create(); }
+        cancel => { root.chooser-cancelled(); }
+    }
+
+    if root.confirm-title != "" : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #00000066;
+        TouchArea { }
+        Rectangle {
+            width: 400px;
+            height: confirm-card.preferred-height;
+            background: white;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.border;
+            confirm-card := VerticalLayout {
+                padding: 20px;
+                spacing: 10px;
+                Text { text: root.confirm-title; font-size: 15px; font-weight: 700; color: Theme.text; }
+                Text { text: root.confirm-message; font-size: 13px; color: Theme.label; wrap: word-wrap; }
+                Rectangle { height: 6px; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    if root.confirm-cancel-visible : OutlineButton { width: 100px; text: "Cancel"; clicked => { root.cancelled(); } }
+                    AmberButton { width: 110px; height: 40px; text: root.confirm-button; clicked => { root.confirmed(); } }
+                }
+            }
+        }
+    }
+}

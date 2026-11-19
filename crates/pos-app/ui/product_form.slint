@@ -1,0 +1,382 @@
+// Add / Edit Product dialog (ui/supervisor/product_dialog.py): identity, pricing (cost +
+// product-group markup -> selling price), alias / variant groups and the GCT flag on the left,
+// discounts on the right. Case items come in a later step.
+
+import { ComboBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { AmberButton, OutlineButton, Field, FieldLabel, CheckRow } from "widgets.slint";
+
+// Looks like a dropdown; clicking opens the group chooser.
+component GroupButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> active: true;
+    callback clicked();
+    height: 36px;
+    border-radius: 6px;
+    border-width: 1.5px;
+    border-color: root.text != "" || touch.has-hover ? Theme.accent : Theme.border;
+    background: white;
+    Text {
+        x: 10px;
+        width: parent.width - 36px;
+        text: root.text == "" ? "— None —" : root.text;
+        font-size: 12px;
+        color: root.text == "" ? Theme.muted : Theme.text;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    Text { x: parent.width - 24px; text: "▾"; font-size: 12px; color: Theme.muted; vertical-alignment: center; }
+    touch := TouchArea { enabled: root.active; clicked => { root.clicked(); } }
+}
+
+// One discount tier: pick a shared level, a custom rule, or nothing; optional dates.
+component DiscountSlotEditor inherits VerticalLayout {
+    in property <string> title;
+    in property <[string]> options;
+    /// Index of the "Custom..." entry in `options` (0 is "— None —").
+    in property <int> custom-index;
+    in property <bool> active: true;
+    in-out property <int> index;
+    in-out property <string> qty;
+    in-out property <string> pct;
+    in-out property <string> from;
+    in-out property <string> to;
+    callback changed();
+
+    spacing: 4px;
+    FieldLabel { text: root.title; }
+    ComboBox {
+        model: root.options;
+        current-index <=> root.index;
+        enabled: root.active;
+        selected(v) => { root.changed(); }
+    }
+    if root.index == root.custom-index : HorizontalLayout {
+        spacing: 8px;
+        VerticalLayout {
+            spacing: 2px;
+            FieldLabel { text: "Min qty"; font-size: 10px; }
+            Field {
+                text <=> root.qty;
+                placeholder: "3";
+                active: root.active;
+                edited(t) => { root.changed(); }
+            }
+        }
+        VerticalLayout {
+            spacing: 2px;
+            FieldLabel { text: "Discount %"; font-size: 10px; }
+            Field {
+                text <=> root.pct;
+                placeholder: "35";
+                active: root.active;
+                edited(t) => { root.changed(); }
+            }
+        }
+    }
+    if root.index != 0 : HorizontalLayout {
+        spacing: 8px;
+        VerticalLayout {
+            spacing: 2px;
+            FieldLabel { text: "From (YYYY-MM-DD)"; font-size: 10px; }
+            Field {
+                text <=> root.from;
+                placeholder: "optional";
+                active: root.active;
+                edited(t) => { root.changed(); }
+            }
+        }
+        VerticalLayout {
+            spacing: 2px;
+            FieldLabel { text: "Until (YYYY-MM-DD)"; font-size: 10px; }
+            Field {
+                text <=> root.to;
+                placeholder: "optional";
+                active: root.active;
+                edited(t) => { root.changed(); }
+            }
+        }
+    }
+}
+
+export component ProductForm inherits Rectangle {
+    in property <string> title;
+    in property <bool> editing;
+    /// Non-empty: this product can't be edited here yet; the text says why.
+    in property <string> notice;
+    in-out property <string> barcode;
+    in-out property <string> name;
+    in-out property <string> cost;
+    in property <[string]> group-names;
+    in-out property <int> group-index;
+    in-out property <bool> gct: true;
+    /// Alias and variant group names ("" = none); picked in the chooser.
+    in property <string> alias-name;
+    in property <string> variant-name;
+    in property <string> price-text;
+    in property <string> price-hint;
+    in property <string> error-text;
+
+    // discounts
+    in property <[string]> discount-options;
+    in property <int> custom-index;
+    in-out property <int> d1-index;
+    in-out property <string> d1-qty;
+    in-out property <string> d1-pct;
+    in-out property <string> d1-from;
+    in-out property <string> d1-to;
+    in-out property <int> d2-index;
+    in-out property <string> d2-qty;
+    in-out property <string> d2-pct;
+    in-out property <string> d2-from;
+    in-out property <string> d2-to;
+    in-out property <bool> stack;
+    in property <string> discount-summary;
+
+    callback pick-alias();
+    callback pick-variant();
+    callback discount-changed();
+    /// Cost text or group changed: the window recalculates the price.
+    callback changed();
+    callback save();
+    callback cancel();
+    callback delete();
+
+    background: #00000066;
+    TouchArea { }   // swallow clicks on the page underneath
+
+    init => { barcode-field.focus-input(); }
+
+    Rectangle {
+        width: min(900px, parent.width - 40px);
+        height: min(card.preferred-height, parent.height - 30px);
+        background: white;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Theme.border;
+        clip: true;
+
+        card := VerticalLayout {
+            // title bar
+            Rectangle {
+                height: 48px;
+                background: Theme.dark;
+                Rectangle { y: parent.height - 2px; height: 2px; background: Theme.accent; }
+                Text {
+                    x: 20px;
+                    text: root.title;
+                    color: white;
+                    font-size: 15px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                padding: 20px;
+                padding-top: 14px;
+                spacing: 8px;
+
+                if root.notice != "" : Rectangle {
+                    background: #FFF4DE;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                    height: notice-text.preferred-height + 20px;
+                    notice-text := Text {
+                        x: 12px;
+                        y: 10px;
+                        width: parent.width - 24px;
+                        text: root.notice;
+                        color: #6B4309;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 28px;
+
+                    // ── left: product ──
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 6px;
+
+                        FieldLabel { text: "Barcode *"; }
+                        barcode-field := Field {
+                            text <=> root.barcode;
+                            placeholder: "Scan or type barcode";
+                            force-upper: true;
+                            active: root.notice == "";
+                            accepted => { name-field.focus-input(); }
+                        }
+                        FieldLabel { text: "Name *"; }
+                        name-field := Field {
+                            text <=> root.name;
+                            placeholder: "e.g. COCA COLA 330ML";
+                            force-upper: true;
+                            active: root.notice == "";
+                            accepted => { cost-field.focus-input(); }
+                        }
+
+                        Rectangle { height: 4px; }
+                        FieldLabel { text: "Cost"; }
+                        cost-field := Field {
+                            text <=> root.cost;
+                            placeholder: "0.00";
+                            active: root.notice == "";
+                            edited(t) => { root.changed(); }
+                            accepted => { root.save(); }
+                        }
+                        FieldLabel { text: "Selling Price"; }
+                        Rectangle {
+                            height: 36px;
+                            background: Theme.green-light;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: Theme.green-border;
+                            Text {
+                                x: 12px;
+                                width: parent.width - 24px;
+                                text: root.price-text == "" ? "Enter a cost above to calculate" : root.price-text;
+                                color: root.price-text == "" ? Theme.muted : Theme.green;
+                                font-size: root.price-text == "" ? 12px : 14px;
+                                font-weight: root.price-text == "" ? 500 : 700;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: root.price-hint;
+                            color: Theme.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                            visible: root.price-hint != "";
+                            height: root.price-hint == "" ? 0px : self.preferred-height;
+                        }
+
+                        FieldLabel { text: "Product Group"; }
+                        ComboBox {
+                            model: root.group-names;
+                            current-index <=> root.group-index;
+                            enabled: root.notice == "";
+                            selected(v) => { root.changed(); }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            VerticalLayout {
+                                spacing: 4px;
+                                FieldLabel { text: "Alias Group"; }
+                                GroupButton {
+                                    text: root.alias-name;
+                                    active: root.notice == "";
+                                    clicked => { root.pick-alias(); }
+                                }
+                            }
+                            VerticalLayout {
+                                spacing: 4px;
+                                FieldLabel { text: "Variant Group"; }
+                                GroupButton {
+                                    text: root.variant-name;
+                                    active: root.notice == "";
+                                    clicked => { root.pick-variant(); }
+                                }
+                            }
+                        }
+
+                        CheckRow {
+                            text: "GCT Applicable";
+                            checked <=> root.gct;
+                        }
+                    }
+
+                    // ── right: discounts ──
+                    VerticalLayout {
+                        width: 330px;
+                        spacing: 8px;
+
+                        Text { text: "DISCOUNTS"; color: Theme.accent-dark; font-size: 11px; font-weight: 800; }
+                        Rectangle { height: 1px; background: Theme.border-light; }
+
+                        DiscountSlotEditor {
+                            title: "Discount 1  (the usual one)";
+                            options: root.discount-options;
+                            custom-index: root.custom-index;
+                            active: root.notice == "";
+                            index <=> root.d1-index;
+                            qty <=> root.d1-qty;
+                            pct <=> root.d1-pct;
+                            from <=> root.d1-from;
+                            to <=> root.d1-to;
+                            changed => { root.discount-changed(); }
+                        }
+                        DiscountSlotEditor {
+                            title: "Discount 2  (a bigger deal or a promo)";
+                            options: root.discount-options;
+                            custom-index: root.custom-index;
+                            active: root.notice == "";
+                            index <=> root.d2-index;
+                            qty <=> root.d2-qty;
+                            pct <=> root.d2-pct;
+                            from <=> root.d2-from;
+                            to <=> root.d2-to;
+                            changed => { root.discount-changed(); }
+                        }
+                        CheckRow {
+                            text: "Discount 2 adds to discount 1";
+                            checked <=> root.stack;
+                        }
+                        Text {
+                            text: root.discount-summary;
+                            color: Theme.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                            visible: root.discount-summary != "";
+                            height: root.discount-summary == "" ? 0px : self.preferred-height;
+                        }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+
+                if root.error-text != "" : Text {
+                    text: root.error-text;
+                    color: Theme.red;
+                    font-size: 12px;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                }
+
+                Rectangle { height: 2px; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    if root.editing : Rectangle {
+                        width: 90px;
+                        height: 40px;
+                        border-radius: 8px;
+                        border-width: 1.5px;
+                        border-color: Theme.red-border;
+                        background: del-touch.has-hover ? Theme.red-light : transparent;
+                        Text {
+                            text: "Delete";
+                            color: Theme.red;
+                            font-size: 12px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        del-touch := TouchArea { clicked => { root.delete(); } }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    OutlineButton { width: 100px; text: "Cancel"; clicked => { root.cancel(); } }
+                    AmberButton {
+                        width: 120px;
+                        height: 40px;
+                        text: "Save";
+                        active: root.notice == "";
+                        clicked => { root.save(); }
+                    }
+                }
+            }
+        }
+    }
+}

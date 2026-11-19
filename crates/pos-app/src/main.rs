@@ -13,8 +13,11 @@ use pos_core::{
     AuthError, AuthService, BusinessInfo, ConfigRepository, Role, SetupData, SetupError, User,
     UserRepository,
 };
-use pos_db::{ConfigDb, UsersDb};
+use pos_db::{ConfigDb, ProductsDb, UsersDb};
 use slint::ComponentHandle;
+
+mod product_form;
+mod supervisor;
 
 slint::include_modules!();
 
@@ -205,6 +208,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&dir)?;
     let users = Arc::new(UsersDb::open(dir.join("users.db"))?);
     let config = Arc::new(ConfigDb::open(dir.join("config.db"))?);
+    let products = Arc::new(ProductsDb::open(dir.join("products.db"))?);
+    let ctx = Arc::new(supervisor::Ctx { config: config.clone(), products });
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("add-user") {
@@ -277,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         win.set_error_text("".into());
 
         // Argon2 is deliberately slow: keep it off the UI thread.
-        let (auth, users, config, weak) = (auth.clone(), users.clone(), config.clone(), win.as_weak());
+        let (auth, users, config, weak, ctx) = (auth.clone(), users.clone(), config.clone(), win.as_weak(), ctx.clone());
         std::thread::spawn(move || {
             let result: Result<User, AuthError> = auth
                 .login(&username, &password)
@@ -286,7 +291,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let Some(win) = weak.upgrade() else { return };
                 win.set_busy(false);
                 match result {
-                    Ok(user) => on_signed_in(&win, user),
+                    Ok(user) => on_signed_in(&win, user, ctx),
                     Err(e) => {
                         win.set_error_text(e.to_string().into());
                         if matches!(e, AuthError::InvalidCredentials) {
@@ -302,14 +307,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Next step: open the window for `user.role` (cashier / supervisor / manager),
-/// hide this one, and show it again on logout.
-fn on_signed_in(win: &LoginWindow, user: User) {
+thread_local! {
+    // The signed-in window must stay alive while it is shown. Replaced on the next sign-in.
+    static OPEN_WINDOW: std::cell::RefCell<Option<SupervisorWindow>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Opens the window for `user.role` and hides the login window; Logout brings the login back.
+/// Cashiers don't have a window yet (the cashier screen is the next big piece).
+fn on_signed_in(win: &LoginWindow, user: User, ctx: Arc<supervisor::Ctx>) {
     println!("Signed in: {} ({})", user.full_name, user.role);
     win.set_username("".into());
     win.set_password("".into());
-    win.set_info_text(
-        format!("Signed in as {} ({}). The {} window comes next.", user.full_name, user.role, user.role)
-            .into(),
-    );
+
+    if user.role == Role::Cashier {
+        win.set_info_text(format!("Signed in as {} (cashier). The cashier window comes next.", user.full_name).into());
+        return;
+    }
+    let login = win.as_weak();
+    match supervisor::open(&user, ctx, move || {
+        // Show the login window first so the event loop never sees zero open windows.
+        if let Some(l) = login.upgrade() {
+            let _ = l.show();
+            l.invoke_focus_username();
+        }
+        OPEN_WINDOW.with(|w| {
+            if let Some(w) = w.borrow().as_ref() {
+                let _ = w.hide();
+            }
+        });
+    }) {
+        Ok(sup) => {
+            let _ = sup.show();
+            let _ = win.hide();
+            OPEN_WINDOW.with(|w| *w.borrow_mut() = Some(sup));
+        }
+        Err(e) => win.set_error_text(format!("Could not open the window: {e}").into()),
+    }
 }
