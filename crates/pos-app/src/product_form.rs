@@ -6,8 +6,9 @@
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use pos_core::{
-    format_money, parse_cost, price_from_markup, price_hint, warnings_for_edit, ConfigRepository, Group, GroupKind,
-    Membership, PriceGroup, ProductDetail, ProductDraft, ProductRepository,
+    fmt_percent, format_money, parse_cost, parse_date, price_from_markup, price_hint, warnings_for_edit, ConfigRepository,
+    DiscountLevel, DiscountSetting, Group, GroupKind, Membership, PriceGroup, ProductDetail, ProductDraft,
+    ProductRepository, SlotSetting, SlotSource,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel, Weak};
 
@@ -42,6 +43,8 @@ struct Form {
     /// The product being edited (`None` = adding).
     editing: Option<ProductDetail>,
     groups: Vec<Group>,
+    /// The shared discount levels offered in the two discount boxes.
+    levels: Vec<DiscountLevel>,
     alias_id: Option<i64>,
     variant_id: Option<i64>,
     baseline: Option<Baseline>,
@@ -84,7 +87,86 @@ fn list(repo: &dyn ProductRepository, kind: GroupKind) -> Vec<PriceGroup> {
     repo.price_groups(kind).unwrap_or_default()
 }
 
+fn today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
 impl Env {
+    // ── discounts ──
+
+    /// One discount box -> the setting to store. Box 0 = none, the last entry = custom.
+    fn read_slot(&self, win: &SupervisorWindow, n: u8) -> Result<Option<SlotSetting>, String> {
+        let (index, qty, pct, from, to) = if n == 1 {
+            (win.get_form_d1_index(), win.get_form_d1_qty(), win.get_form_d1_pct(), win.get_form_d1_from(), win.get_form_d1_to())
+        } else {
+            (win.get_form_d2_index(), win.get_form_d2_qty(), win.get_form_d2_pct(), win.get_form_d2_from(), win.get_form_d2_to())
+        };
+        if index <= 0 {
+            return Ok(None);
+        }
+        let levels = self.form.borrow().levels.clone();
+        let source = if index as usize == levels.len() + 1 {
+            let min_qty = qty
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| format!("Discount {n}: enter the minimum quantity as a whole number, like 3."))?;
+            let percent = pct
+                .trim()
+                .trim_end_matches('%')
+                .replace(',', ".")
+                .parse::<f64>()
+                .map_err(|_| format!("Discount {n}: enter the percentage as a number, like 35 or 12.5."))?;
+            SlotSource::Custom { min_qty, percent }
+        } else {
+            match levels.get(index as usize - 1) {
+                Some(l) => SlotSource::Level(l.id),
+                None => return Ok(None),
+            }
+        };
+        let date = |t: &str| parse_date(t).map_err(|e| format!("Discount {n}: {e}"));
+        Ok(Some(SlotSetting { source, starts: date(&from)?, ends: date(&to)? }))
+    }
+
+    fn read_discounts(&self, win: &SupervisorWindow) -> Result<DiscountSetting, String> {
+        Ok(DiscountSetting { slot1: self.read_slot(win, 1)?, slot2: self.read_slot(win, 2)?, stack: win.get_form_stack() })
+    }
+
+    fn fill_slot(&self, win: &SupervisorWindow, n: u8, slot: &Option<SlotSetting>, levels: &[DiscountLevel]) {
+        let custom_index = levels.len() as i32 + 1;
+        let (index, qty, pct, from, to) = match slot {
+            None => (0, String::new(), String::new(), String::new(), String::new()),
+            Some(s) => {
+                let (index, qty, pct) = match &s.source {
+                    SlotSource::Level(id) => (levels.iter().position(|l| l.id == *id).map_or(0, |i| i as i32 + 1), String::new(), String::new()),
+                    SlotSource::Custom { min_qty, percent } => (custom_index, min_qty.to_string(), fmt_percent(*percent)),
+                };
+                (index, qty, pct, s.starts.clone().unwrap_or_default(), s.ends.clone().unwrap_or_default())
+            }
+        };
+        if n == 1 {
+            win.set_form_d1_index(index);
+            win.set_form_d1_qty(qty.into());
+            win.set_form_d1_pct(pct.into());
+            win.set_form_d1_from(from.into());
+            win.set_form_d1_to(to.into());
+        } else {
+            win.set_form_d2_index(index);
+            win.set_form_d2_qty(qty.into());
+            win.set_form_d2_pct(pct.into());
+            win.set_form_d2_from(from.into());
+            win.set_form_d2_to(to.into());
+        }
+    }
+
+    /// The plain-language lines under the discount boxes (blank while an entry is incomplete).
+    fn refresh_discount_summary(&self, win: &SupervisorWindow) {
+        let text = match self.read_discounts(win) {
+            Ok(d) if d.validate().is_ok() => d.summary(&self.form.borrow().levels, &today()).join("\n"),
+            _ => String::new(),
+        };
+        win.set_form_discount_summary(text.into());
+    }
+
     fn with(&self, f: impl FnOnce(&Env, &SupervisorWindow)) {
         if let Some(win) = self.weak.upgrade() {
             f(self, &win);
@@ -199,6 +281,17 @@ impl Env {
         names.extend(groups.iter().map(|g| SharedString::from(g.name.as_str())));
         win.set_form_group_names(ModelRc::new(VecModel::from(names)));
 
+        let levels = self.ctx.products.discount_levels().unwrap_or_default();
+        let mut options = vec![SharedString::from("— None —")];
+        options.extend(levels.iter().map(|l| SharedString::from(l.label())));
+        options.push(SharedString::from("Custom…"));
+        win.set_form_discount_options(ModelRc::new(VecModel::from(options)));
+        win.set_form_custom_index(levels.len() as i32 + 1);
+        let discounts = editing.as_ref().map(|p| p.discounts.clone()).unwrap_or_default();
+        self.fill_slot(win, 1, &discounts.slot1, &levels);
+        self.fill_slot(win, 2, &discounts.slot2, &levels);
+        win.set_form_stack(discounts.stack);
+
         let (title, notice, barcode, name, cost, gct, group_index) = match &editing {
             Some(p) => (
                 "Edit Product",
@@ -232,6 +325,7 @@ impl Env {
             };
             f.editing = editing;
             f.groups = groups;
+            f.levels = levels;
             f.chooser = None;
             f.pending = Pending::None;
             f.symbol = self.currency();
@@ -247,6 +341,7 @@ impl Env {
         win.set_form_error("".into());
         self.show_group_names(win);
         self.recalc(win);
+        self.refresh_discount_summary(win);
         win.set_form_open(true);
     }
 
@@ -382,6 +477,10 @@ impl Env {
             let f = self.form.borrow();
             (f.alias_id, f.variant_id)
         };
+        let discounts = match self.read_discounts(win) {
+            Ok(d) => d,
+            Err(msg) => return win.set_form_error(msg.into()),
+        };
         let draft = ProductDraft {
             barcode: win.get_form_barcode().to_string(),
             name: win.get_form_name().to_string(),
@@ -390,6 +489,7 @@ impl Env {
             alias_group_id,
             variant_group_id,
             gct: win.get_form_gct(),
+            discounts,
         };
         let mut write = match draft.into_write(self.group_markup(win.get_form_group_index())) {
             Ok(w) => w,
@@ -470,6 +570,7 @@ pub fn wire(win: &SupervisorWindow, ctx: Arc<Ctx>, reload: Rc<dyn Fn()>) {
         form: Rc::new(RefCell::new(Form {
             editing: None,
             groups: Vec::new(),
+            levels: Vec::new(),
             alias_id: None,
             variant_id: None,
             baseline: None,
@@ -503,6 +604,8 @@ pub fn wire(win: &SupervisorWindow, ctx: Arc<Ctx>, reload: Rc<dyn Fn()>) {
         })
     });
 
+    let e = env.clone();
+    win.on_form_discount_changed(move || e.with(|e, w| e.refresh_discount_summary(w)));
     let e = env.clone();
     win.on_form_pick_alias(move || e.with(|e, w| e.open_chooser(w, GroupKind::Alias)));
     let e = env.clone();

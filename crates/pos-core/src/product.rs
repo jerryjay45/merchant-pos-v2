@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use crate::{
+    discount::DiscountLevel,
     product_edit::{Group, GroupKind, PriceGroup, ProductDetail, ProductError, ProductWrite, UpdateOutcome},
     repo::StorageError,
 };
@@ -74,6 +75,8 @@ pub trait ProductRepository: Send + Sync {
     fn get(&self, id: i64) -> Result<Option<ProductDetail>, StorageError>;
     /// Product groups (name order) with their markups, for the Product Group dropdown.
     fn groups(&self) -> Result<Vec<Group>, StorageError>;
+    /// The shared named discount levels, smallest minimum quantity first.
+    fn discount_levels(&self) -> Result<Vec<DiscountLevel>, StorageError>;
     /// The alias or variant groups, by name.
     fn price_groups(&self, kind: GroupKind) -> Result<Vec<PriceGroup>, StorageError>;
     /// Creates an empty group (cost and price 0). The name is upper-cased; a name that exists
@@ -101,6 +104,9 @@ impl<T: ProductRepository + ?Sized> ProductRepository for Arc<T> {
     }
     fn groups(&self) -> Result<Vec<Group>, StorageError> {
         (**self).groups()
+    }
+    fn discount_levels(&self) -> Result<Vec<DiscountLevel>, StorageError> {
+        (**self).discount_levels()
     }
     fn price_groups(&self, kind: GroupKind) -> Result<Vec<PriceGroup>, StorageError> {
         (**self).price_groups(kind)

@@ -7,7 +7,7 @@
 
 use thiserror::Error;
 
-use crate::{product::Membership, repo::StorageError};
+use crate::{discount::DiscountSetting, product::Membership, repo::StorageError};
 
 /// Highest cost the form accepts, in cents (the Python form allows up to 999,999.00).
 pub const MAX_COST_CENTS: i64 = 99_999_900;
@@ -52,7 +52,7 @@ pub struct PriceGroup {
 
 /// A product as stored. `cost_cents` / `price_cents` are the EFFECTIVE values (a member of an
 /// alias or variant group shows the group's numbers), which is what the form displays.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProductDetail {
     pub id: i64,
     pub barcode: String,
@@ -64,6 +64,8 @@ pub struct ProductDetail {
     pub cost_cents: i64,
     pub price_cents: i64,
     pub gct: bool,
+    /// The product's own discount settings (a group's own, if it has any, take precedence at sale time).
+    pub discounts: DiscountSetting,
     pub membership: Membership,
 }
 
@@ -75,7 +77,7 @@ impl ProductDetail {
 }
 
 /// What the form collects (before `normalized`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProductDraft {
     pub barcode: String,
     pub name: String,
@@ -84,10 +86,11 @@ pub struct ProductDraft {
     pub alias_group_id: Option<i64>,
     pub variant_group_id: Option<i64>,
     pub gct: bool,
+    pub discounts: DiscountSetting,
 }
 
 /// A draft after validation, with the price worked out. This is what gets stored.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProductWrite {
     pub barcode: String,
     pub name: String,
@@ -97,6 +100,7 @@ pub struct ProductWrite {
     pub alias_group_id: Option<i64>,
     pub variant_group_id: Option<i64>,
     pub gct: bool,
+    pub discounts: DiscountSetting,
 }
 
 /// Something the user should confirm before an edit is saved. Typed here so every front end
@@ -193,6 +197,7 @@ impl ProductDraft {
         if d.alias_group_id.is_some() && d.variant_group_id.is_some() {
             return invalid("A product can be in an alias group or a variant group, not both.");
         }
+        d.discounts.validate().map_err(ProductError::Invalid)?;
         Ok(ProductWrite {
             price_cents: price_from_markup(d.cost_cents, markup.unwrap_or(0.0)),
             barcode: d.barcode,
@@ -202,6 +207,7 @@ impl ProductDraft {
             alias_group_id: d.alias_group_id,
             variant_group_id: d.variant_group_id,
             gct: d.gct,
+            discounts: d.discounts,
         })
     }
 }
@@ -252,7 +258,7 @@ mod tests {
     use super::*;
 
     fn draft(barcode: &str, name: &str, cost: i64) -> ProductDraft {
-        ProductDraft { barcode: barcode.into(), name: name.into(), cost_cents: cost, group_id: None, alias_group_id: None, variant_group_id: None, gct: true }
+        ProductDraft { barcode: barcode.into(), name: name.into(), cost_cents: cost, group_id: None, alias_group_id: None, variant_group_id: None, gct: true, discounts: Default::default() }
     }
 
     #[test]
@@ -294,7 +300,7 @@ mod tests {
     fn only_case_items_are_blocked() {
         let mut p = ProductDetail {
             id: 1, barcode: "1".into(), name: "X".into(), group_id: None, alias_group_id: None, variant_group_id: None,
-            cost_cents: 0, price_cents: 0, gct: true, membership: Membership::Standalone,
+            cost_cents: 0, price_cents: 0, gct: true, discounts: Default::default(), membership: Membership::Standalone,
         };
         for (m, ok) in [(Membership::Standalone, true), (Membership::Alias("A".into()), true), (Membership::Variant("V".into()), true), (Membership::Case, false)] {
             p.membership = m;
@@ -314,7 +320,7 @@ mod tests {
     fn barcode_change_warns_only_when_it_really_changes() {
         let original = ProductDetail {
             id: 1, barcode: "ABC123".into(), name: "X".into(), group_id: None, alias_group_id: None,
-            variant_group_id: None, cost_cents: 0, price_cents: 0, gct: true, membership: Membership::Standalone,
+            variant_group_id: None, cost_cents: 0, price_cents: 0, gct: true, discounts: Default::default(), membership: Membership::Standalone,
         };
         assert!(warnings_for_edit(&original, &draft(" abc123 ", "X", 0)).is_empty(), "case and spaces only");
         let w = warnings_for_edit(&original, &draft("zzz", "X", 0));

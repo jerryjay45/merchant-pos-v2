@@ -7,6 +7,7 @@ edition.workspace = true
 pos-core = { path = "../pos-core" }
 pos-db = { path = "../pos-db" }
 slint = "1.8"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [build-dependencies]
 slint-build = "1.8"

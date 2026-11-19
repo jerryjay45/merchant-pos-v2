@@ -170,6 +170,8 @@ component ProductsPage inherits Rectangle {
                     for r in root.rows : Rectangle {
                         height: 36px;
                         background: row-touch.has-hover ? #FFF8E8 : transparent;
+                        // First child = underneath, so the Edit / Delete buttons above it get their clicks.
+                        row-touch := TouchArea { double-clicked => { root.edit-product(r.id); } }
                         Rectangle {
                             y: parent.height - 1px;
                             height: 1px;
@@ -216,7 +218,6 @@ component ProductsPage inherits Rectangle {
                                 }
                             }
                         }
-                        row-touch := TouchArea { double-clicked => { root.edit-product(r.id); } }
                     }
                 }
                 if root.rows.length == 0 : Text {
@@ -303,6 +304,20 @@ export component SupervisorWindow inherits Window {
     in-out property <bool> form-gct: true;
     in property <string> form-alias-name;
     in property <string> form-variant-name;
+    in property <[string]> form-discount-options;
+    in property <int> form-custom-index;
+    in-out property <int> form-d1-index;
+    in-out property <string> form-d1-qty;
+    in-out property <string> form-d1-pct;
+    in-out property <string> form-d1-from;
+    in-out property <string> form-d1-to;
+    in-out property <int> form-d2-index;
+    in-out property <string> form-d2-qty;
+    in-out property <string> form-d2-pct;
+    in-out property <string> form-d2-from;
+    in-out property <string> form-d2-to;
+    in-out property <bool> form-stack;
+    in property <string> form-discount-summary;
     in property <string> form-price-text;
     in property <string> form-price-hint;
     in property <string> form-error;
@@ -324,6 +339,7 @@ export component SupervisorWindow inherits Window {
     callback add-product();
     callback edit-product(int);
     callback delete-product(int);
+    callback form-discount-changed();
     callback form-pick-alias();
     callback form-pick-variant();
     callback chooser-searched(string);
@@ -476,6 +492,21 @@ export component SupervisorWindow inherits Window {
         variant-name: root.form-variant-name;
         pick-alias => { root.form-pick-alias(); }
         pick-variant => { root.form-pick-variant(); }
+        discount-options: root.form-discount-options;
+        custom-index: root.form-custom-index;
+        d1-index <=> root.form-d1-index;
+        d1-qty <=> root.form-d1-qty;
+        d1-pct <=> root.form-d1-pct;
+        d1-from <=> root.form-d1-from;
+        d1-to <=> root.form-d1-to;
+        d2-index <=> root.form-d2-index;
+        d2-qty <=> root.form-d2-qty;
+        d2-pct <=> root.form-d2-pct;
+        d2-from <=> root.form-d2-from;
+        d2-to <=> root.form-d2-to;
+        stack <=> root.form-stack;
+        discount-summary: root.form-discount-summary;
+        discount-changed => { root.form-discount-changed(); }
         price-text: root.form-price-text;
         price-hint: root.form-price-hint;
         error-text: root.form-error;

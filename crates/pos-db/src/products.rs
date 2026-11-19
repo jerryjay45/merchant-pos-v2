@@ -4,6 +4,7 @@
 use std::{path::Path, sync::Mutex};
 
 use pos_core::{
+    discount::{DiscountLevel, DiscountSetting, SlotSetting, SlotSource},
     money::to_cents,
     product::{Membership, ProductPage, ProductQuery, ProductRepository, ProductRow},
     product_edit::{Group, GroupKind, GroupSync, PriceGroup, ProductDetail, ProductError, ProductWrite, UpdateOutcome},
@@ -52,6 +53,7 @@ impl ProductsDb {
     fn init(conn: Connection) -> Result<Self, StorageError> {
         configure(&conn)?;
         conn.execute_batch(SCHEMA).map_err(storage)?;
+        migrate(&conn)?;
         setup_fts(&conn);
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -75,6 +77,31 @@ fn setup_fts(conn: &Connection) {
         // First time on a database that already has rows: index them.
         let _ = conn.execute("INSERT INTO products_fts(products_fts) VALUES ('rebuild')", []);
     }
+}
+
+/// Columns the Rust app adds to `products` (all optional, so the Python app keeps working on the
+/// same file: it names the columns it uses and ignores the rest).
+const EXTRA_PRODUCT_COLUMNS: &[(&str, &str)] = &[
+    ("discount1_starts", "TEXT DEFAULT NULL"),
+    ("discount1_ends", "TEXT DEFAULT NULL"),
+    ("discount2_starts", "TEXT DEFAULT NULL"),
+    ("discount2_ends", "TEXT DEFAULT NULL"),
+    ("discount_stack", "INTEGER NOT NULL DEFAULT 0"),
+];
+
+/// Adds the extra columns that are missing. Safe to run on every start.
+fn migrate(conn: &Connection) -> Result<(), StorageError> {
+    let have: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('products')").map_err(storage)?;
+        let rows = stmt.query_map([], |r| r.get(0)).map_err(storage)?.collect::<Result<Vec<_>, _>>().map_err(storage)?;
+        rows
+    };
+    for (name, ddl) in EXTRA_PRODUCT_COLUMNS {
+        if !have.iter().any(|h| h == name) {
+            conn.execute(&format!("ALTER TABLE products ADD COLUMN {name} {ddl}"), []).map_err(storage)?;
+        }
+    }
+    Ok(())
 }
 
 fn fts_available(conn: &Connection) -> bool {
@@ -181,6 +208,28 @@ impl ProductRepository for ProductsDb {
         Ok(rows)
     }
 
+    fn discount_levels(&self) -> Result<Vec<DiscountLevel>, StorageError> {
+        let conn = self.conn.lock().map_err(storage)?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, min_qty, percent FROM discount_levels ORDER BY min_qty, id")
+            .map_err(storage)?;
+        let rows = stmt
+            .query_map([], |r| {
+                // stored as a fraction (0.05 = 5 %); 4 decimals hides the float noise of x100
+                let pct: f64 = r.get(3)?;
+                Ok(DiscountLevel {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    min_qty: r.get::<_, i64>(2)?.max(1) as u32,
+                    percent: (pct * 100.0 * 1e4).round() / 1e4,
+                })
+            })
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        Ok(rows)
+    }
+
     fn price_groups(&self, kind: GroupKind) -> Result<Vec<PriceGroup>, StorageError> {
         let conn = self.conn.lock().map_err(storage)?;
         let mut stmt = conn
@@ -219,9 +268,27 @@ impl ProductRepository for ProductsDb {
         let mut conn = self.conn.lock().map_err(storage)?;
         let tx = conn.transaction().map_err(storage)?;
         tx.execute(
-            "INSERT INTO products (barcode, name, cost, selling_price, group_id, alias_group_id, variant_group_id, gct_applicable)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![p.barcode, p.name, dollars(p.cost_cents), dollars(p.price_cents), p.group_id, p.alias_group_id, p.variant_group_id, p.gct as i64],
+            "INSERT INTO products (barcode, name, cost, selling_price, group_id, alias_group_id, variant_group_id, gct_applicable,
+                                   discount_level1_id, inline_discount1_qty, inline_discount1_pct, discount1_starts, discount1_ends,
+                                   discount_level2_id, inline_discount2_qty, inline_discount2_pct, discount2_starts, discount2_ends,
+                                   discount_stack)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            params_from_iter(
+                [
+                    Value::Text(p.barcode.clone()),
+                    Value::Text(p.name.clone()),
+                    Value::Real(dollars(p.cost_cents)),
+                    Value::Real(dollars(p.price_cents)),
+                    opt_int(p.group_id),
+                    opt_int(p.alias_group_id),
+                    opt_int(p.variant_group_id),
+                    Value::Integer(p.gct as i64),
+                ]
+                .into_iter()
+                .chain(slot_values(&p.discounts.slot1))
+                .chain(slot_values(&p.discounts.slot2))
+                .chain([Value::Integer(p.discounts.stack as i64)]),
+            ),
         )
         .map_err(|e| write_error(e, &p.barcode))?;
         let id = tx.last_insert_rowid();
@@ -245,9 +312,28 @@ impl ProductRepository for ProductsDb {
         tx.execute(
             "UPDATE products SET barcode = ?1, name = ?2, cost = ?3, selling_price = ?4, group_id = ?5,
                     alias_group_id = ?6, variant_group_id = ?7, gct_applicable = ?8,
+                    discount_level1_id = ?9, inline_discount1_qty = ?10, inline_discount1_pct = ?11,
+                    discount1_starts = ?12, discount1_ends = ?13,
+                    discount_level2_id = ?14, inline_discount2_qty = ?15, inline_discount2_pct = ?16,
+                    discount2_starts = ?17, discount2_ends = ?18, discount_stack = ?19,
                     updated_at = datetime('now', 'localtime')
-             WHERE id = ?9",
-            params![p.barcode, p.name, dollars(p.cost_cents), dollars(p.price_cents), p.group_id, p.alias_group_id, p.variant_group_id, p.gct as i64, id],
+             WHERE id = ?20",
+            params_from_iter(
+                [
+                    Value::Text(p.barcode.clone()),
+                    Value::Text(p.name.clone()),
+                    Value::Real(dollars(p.cost_cents)),
+                    Value::Real(dollars(p.price_cents)),
+                    opt_int(p.group_id),
+                    opt_int(p.alias_group_id),
+                    opt_int(p.variant_group_id),
+                    Value::Integer(p.gct as i64),
+                ]
+                .into_iter()
+                .chain(slot_values(&p.discounts.slot1))
+                .chain(slot_values(&p.discounts.slot2))
+                .chain([Value::Integer(p.discounts.stack as i64), Value::Integer(id)]),
+            ),
         )
         .map_err(|e| write_error(e, &p.barcode))?;
 
@@ -289,6 +375,39 @@ impl ProductRepository for ProductsDb {
         let conn = self.conn.lock().map_err(storage)?;
         conn.execute("DELETE FROM products WHERE id = ?1", [id]).map(|n| n > 0).map_err(storage)
     }
+}
+
+fn opt_int(v: Option<i64>) -> Value {
+    v.map_or(Value::Null, Value::Integer)
+}
+
+fn opt_text(v: &Option<String>) -> Value {
+    v.as_ref().map_or(Value::Null, |s| Value::Text(s.clone()))
+}
+
+/// The five columns of one discount tier, in the order the statements list them:
+/// level id, inline min qty, inline percent, first day, last day. A named level and a custom
+/// rule exclude each other (a "None" tier clears all five).
+fn slot_values(slot: &Option<SlotSetting>) -> [Value; 5] {
+    match slot {
+        None => [Value::Null, Value::Null, Value::Null, Value::Null, Value::Null],
+        Some(s) => {
+            let (level, qty, pct) = match &s.source {
+                SlotSource::Level(id) => (Value::Integer(*id), Value::Null, Value::Null),
+                SlotSource::Custom { min_qty, percent } => (Value::Null, Value::Integer(*min_qty as i64), Value::Real(*percent)),
+            };
+            [level, qty, pct, opt_text(&s.starts), opt_text(&s.ends)]
+        }
+    }
+}
+
+fn read_slot(level: Option<i64>, qty: Option<i64>, pct: Option<f64>, starts: Option<String>, ends: Option<String>) -> Option<SlotSetting> {
+    let source = match (level, qty, pct) {
+        (Some(id), _, _) => SlotSource::Level(id),
+        (None, Some(q), Some(p)) if q > 0 && p > 0.0 => SlotSource::Custom { min_qty: q as u32, percent: p },
+        _ => return None,
+    };
+    Some(SlotSetting { source, starts, ends })
 }
 
 fn dollars(cents: i64) -> f64 {
@@ -413,7 +532,10 @@ fn get_detail(conn: &Connection, id: i64) -> rusqlite::Result<Option<ProductDeta
     conn.query_row(
         "SELECT p.id, p.barcode, p.name, p.group_id,
                 COALESCE(vg.cost, ag.cost, p.cost), COALESCE(vg.selling_price, ag.selling_price, p.selling_price),
-                p.gct_applicable, p.is_case, ag.name, vg.name, p.alias_group_id, p.variant_group_id
+                p.gct_applicable, p.is_case, ag.name, vg.name, p.alias_group_id, p.variant_group_id,
+                p.discount_level1_id, p.inline_discount1_qty, p.inline_discount1_pct, p.discount1_starts, p.discount1_ends,
+                p.discount_level2_id, p.inline_discount2_qty, p.inline_discount2_pct, p.discount2_starts, p.discount2_ends,
+                p.discount_stack
          FROM products p
          LEFT JOIN alias_groups   ag ON ag.id = p.alias_group_id
          LEFT JOIN variant_groups vg ON vg.id = p.variant_group_id
@@ -437,6 +559,11 @@ fn get_detail(conn: &Connection, id: i64) -> rusqlite::Result<Option<ProductDeta
                 cost_cents: to_cents(r.get::<_, f64>(4)?),
                 price_cents: to_cents(r.get::<_, f64>(5)?),
                 gct: r.get::<_, i64>(6)? != 0,
+                discounts: DiscountSetting {
+                    slot1: read_slot(r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?),
+                    slot2: read_slot(r.get(17)?, r.get(18)?, r.get(19)?, r.get(20)?, r.get(21)?),
+                    stack: r.get::<_, i64>(22)? != 0,
+                },
                 membership,
             })
         },
@@ -612,7 +739,7 @@ mod tests {
     // ── add / edit / delete ──
 
     fn write(barcode: &str, name: &str, cost: i64, price: i64, group: Option<i64>) -> ProductWrite {
-        ProductWrite { barcode: barcode.into(), name: name.into(), cost_cents: cost, price_cents: price, group_id: group, alias_group_id: None, variant_group_id: None, gct: true }
+        ProductWrite { barcode: barcode.into(), name: name.into(), cost_cents: cost, price_cents: price, group_id: group, alias_group_id: None, variant_group_id: None, gct: true, discounts: Default::default() }
     }
 
     #[test]
@@ -812,5 +939,82 @@ mod tests {
         assert!(db.delete(id).unwrap());
         assert!(!db.delete(id).unwrap());
         assert_eq!(db.list(&ProductQuery { search: "milk".into(), limit: 10, offset: 0 }).unwrap().total, 0);
+    }
+
+    // ── discounts ──
+
+    fn custom(min_qty: u32, percent: f64, starts: Option<&str>, ends: Option<&str>) -> Option<SlotSetting> {
+        Some(SlotSetting { source: SlotSource::Custom { min_qty, percent }, starts: starts.map(Into::into), ends: ends.map(Into::into) })
+    }
+
+    #[test]
+    fn discount_levels_are_read_as_percent_smallest_quantity_first() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        db.with_conn(|c| c.execute_batch("INSERT INTO discount_levels (name, min_qty, percent) VALUES ('LEVEL 2', 6, 0.1), ('LEVEL 1', 3, 0.05), ('ODD', 12, 0.07);")).unwrap();
+        let levels = db.discount_levels().unwrap();
+        assert_eq!(
+            levels.iter().map(|l| (l.name.as_str(), l.min_qty, l.percent)).collect::<Vec<_>>(),
+            [("LEVEL 1", 3, 5.0), ("LEVEL 2", 6, 10.0), ("ODD", 12, 7.0)],
+            "0.07 x 100 must read as 7, not 7.000000000000001"
+        );
+    }
+
+    #[test]
+    fn discounts_round_trip_with_dates_and_stacking() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        db.with_conn(|c| c.execute_batch("INSERT INTO discount_levels (name, min_qty, percent) VALUES ('LEVEL 1', 3, 0.05);")).unwrap();
+        let level = db.discount_levels().unwrap()[0].id;
+        let mut w = write("111", "MILK", 1000, 1500, None);
+        w.discounts = DiscountSetting {
+            slot1: Some(SlotSetting { source: SlotSource::Level(level), starts: None, ends: None }),
+            slot2: custom(3, 35.0, Some("2026-12-01"), Some("2026-12-24")),
+            stack: true,
+        };
+        let id = db.add(&w).unwrap();
+        assert_eq!(db.get(id).unwrap().unwrap().discounts, w.discounts);
+
+        // a custom first tier and no second tier; the level and the dates are cleared
+        w.discounts = DiscountSetting { slot1: custom(5, 12.5, None, None), slot2: None, stack: false };
+        db.update(id, &w, 0.10).unwrap();
+        assert_eq!(db.get(id).unwrap().unwrap().discounts, w.discounts);
+        let (lvl, d2): (Option<i64>, Option<String>) = db
+            .with_conn(|c| c.query_row("SELECT discount_level1_id, discount2_starts FROM products WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))))
+            .unwrap();
+        assert_eq!((lvl, d2), (None, None));
+
+        // choosing "None" really removes the discount (the Python dialog left an old custom one behind)
+        w.discounts = DiscountSetting::default();
+        db.update(id, &w, 0.10).unwrap();
+        assert_eq!(db.get(id).unwrap().unwrap().discounts, DiscountSetting::default());
+    }
+
+    #[test]
+    fn an_old_python_database_is_upgraded_in_place_and_keeps_its_data() {
+        let path = std::env::temp_dir().join(format!("merchantpos-migrate-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            // what the Python app created: no Rust-only columns, a product with an inline discount
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(
+                "INSERT INTO products (barcode, name, cost, selling_price, inline_discount1_qty, inline_discount1_pct)
+                 VALUES ('111', 'OLD ITEM', 1.5, 2.25, 3, 5.0);",
+            )
+            .unwrap();
+        }
+        for _ in 0..2 {
+            // opening twice: the upgrade must be repeatable
+            let db = ProductsDb::open(&path).unwrap();
+            let id = db.list(&ProductQuery { search: "old".into(), limit: 5, offset: 0 }).unwrap().rows[0].id;
+            let p = db.get(id).unwrap().unwrap();
+            assert_eq!((p.cost_cents, p.price_cents), (150, 225));
+            assert_eq!(p.discounts.slot1, custom(3, 5.0, None, None));
+            assert!(!p.discounts.stack);
+            let cols: i64 = db
+                .with_conn(|c| c.query_row("SELECT COUNT(*) FROM pragma_table_info('products') WHERE name IN ('discount1_starts','discount1_ends','discount2_starts','discount2_ends','discount_stack')", [], |r| r.get(0)))
+                .unwrap();
+            assert_eq!(cols, 5);
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }

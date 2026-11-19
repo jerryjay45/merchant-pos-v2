@@ -2,6 +2,7 @@
 //! everything the UI needs goes through the types and traits in this crate.
 
 pub mod auth;
+pub mod discount;
 pub mod money;
 pub mod nav;
 pub mod product;
@@ -20,4 +21,7 @@ pub use user::{Role, User, UserRecord};
 pub use product_edit::{
     parse_cost, price_from_markup, price_hint, warnings_for_edit, Group, GroupKind, GroupSync, PriceGroup, ProductDetail,
     ProductDraft, ProductError, ProductWarning, ProductWrite, UpdateOutcome,
+};
+pub use discount::{
+    apply_discount, fmt_percent, parse_date, AppliedDiscount, DiscountLevel, DiscountSetting, Rule, SlotSetting, SlotSource,
 };
