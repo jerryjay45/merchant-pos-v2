@@ -2,8 +2,8 @@
 //! the product group's markup, what is checked before saving, and what the user should be warned
 //! about first. No UI or database in here.
 //!
-//! Only standalone products (not in an alias/variant group, not a case) can be edited so far;
-//! `ProductDetail::membership` tells the caller which it is.
+//! Standalone products and members of an alias or variant group can be edited so far; case
+//! items can't yet (`ProductDetail::editable`).
 
 use thiserror::Error;
 
@@ -21,17 +21,57 @@ pub struct Group {
     pub markup: f64,
 }
 
-/// A product as stored: its own columns, not the group-resolved values the list shows.
+/// Which kind of shared-price group.
+/// Alias: different products that always cost the same (7UP, PEPSI, MTN DEW at $45) and share
+/// cost, price and discounts. Variant: flavours or scents of one product, which also share stock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupKind {
+    Alias,
+    Variant,
+}
+
+impl GroupKind {
+    /// "alias" / "variant", for messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            GroupKind::Alias => "alias",
+            GroupKind::Variant => "variant",
+        }
+    }
+}
+
+/// An alias or variant group, as listed in the picker. Cost and price 0 means a new group that
+/// has no price yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PriceGroup {
+    pub id: i64,
+    pub name: String,
+    pub cost_cents: i64,
+    pub price_cents: i64,
+}
+
+/// A product as stored. `cost_cents` / `price_cents` are the EFFECTIVE values (a member of an
+/// alias or variant group shows the group's numbers), which is what the form displays.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductDetail {
     pub id: i64,
     pub barcode: String,
     pub name: String,
+    /// The markup group (MEATS, GENERAL...), not an alias/variant group.
     pub group_id: Option<i64>,
+    pub alias_group_id: Option<i64>,
+    pub variant_group_id: Option<i64>,
     pub cost_cents: i64,
     pub price_cents: i64,
     pub gct: bool,
     pub membership: Membership,
+}
+
+impl ProductDetail {
+    /// Case items need the rest of the dialog (units per pack, linked product).
+    pub fn editable(&self) -> bool {
+        !matches!(self.membership, Membership::Case)
+    }
 }
 
 /// What the form collects (before `normalized`).
@@ -41,6 +81,8 @@ pub struct ProductDraft {
     pub name: String,
     pub cost_cents: i64,
     pub group_id: Option<i64>,
+    pub alias_group_id: Option<i64>,
+    pub variant_group_id: Option<i64>,
     pub gct: bool,
 }
 
@@ -52,6 +94,8 @@ pub struct ProductWrite {
     pub cost_cents: i64,
     pub price_cents: i64,
     pub group_id: Option<i64>,
+    pub alias_group_id: Option<i64>,
+    pub variant_group_id: Option<i64>,
     pub gct: bool,
 }
 
@@ -146,12 +190,17 @@ impl ProductDraft {
         if d.cost_cents < 0 || d.cost_cents > MAX_COST_CENTS {
             return invalid("Enter a valid cost.");
         }
+        if d.alias_group_id.is_some() && d.variant_group_id.is_some() {
+            return invalid("A product can be in an alias group or a variant group, not both.");
+        }
         Ok(ProductWrite {
             price_cents: price_from_markup(d.cost_cents, markup.unwrap_or(0.0)),
             barcode: d.barcode,
             name: d.name,
             cost_cents: d.cost_cents,
             group_id: d.group_id,
+            alias_group_id: d.alias_group_id,
+            variant_group_id: d.variant_group_id,
             gct: d.gct,
         })
     }
@@ -181,11 +230,21 @@ pub fn price_hint(cost_cents: i64, markup: f64, symbol: &str) -> String {
     )
 }
 
+/// A cost and price that was pushed up to the product's alias or variant group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupSync {
+    pub group_name: String,
+    pub cost_cents: i64,
+    pub price_cents: i64,
+}
+
 /// How far a saved edit reached beyond the product itself.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UpdateOutcome {
-    /// Linked case products whose cost and price were recalculated (the cost changed).
-    pub cases_updated: u32,
+    /// The group's cost and price were set from this product (so every member follows).
+    pub group_sync: Option<GroupSync>,
+    /// Names of the case products whose cost and price were recalculated.
+    pub repriced_cases: Vec<String>,
 }
 
 #[cfg(test)]
@@ -193,7 +252,7 @@ mod tests {
     use super::*;
 
     fn draft(barcode: &str, name: &str, cost: i64) -> ProductDraft {
-        ProductDraft { barcode: barcode.into(), name: name.into(), cost_cents: cost, group_id: None, gct: true }
+        ProductDraft { barcode: barcode.into(), name: name.into(), cost_cents: cost, group_id: None, alias_group_id: None, variant_group_id: None, gct: true }
     }
 
     #[test]
@@ -224,6 +283,26 @@ mod tests {
     }
 
     #[test]
+    fn alias_and_variant_are_exclusive() {
+        let both = ProductDraft { alias_group_id: Some(1), variant_group_id: Some(2), ..draft("1", "X", 0) };
+        assert_eq!(both.into_write(None).unwrap_err().to_string(), "A product can be in an alias group or a variant group, not both.");
+        let alias = ProductDraft { alias_group_id: Some(1), ..draft("1", "X", 0) }.into_write(None).unwrap();
+        assert_eq!((alias.alias_group_id, alias.variant_group_id), (Some(1), None));
+    }
+
+    #[test]
+    fn only_case_items_are_blocked() {
+        let mut p = ProductDetail {
+            id: 1, barcode: "1".into(), name: "X".into(), group_id: None, alias_group_id: None, variant_group_id: None,
+            cost_cents: 0, price_cents: 0, gct: true, membership: Membership::Standalone,
+        };
+        for (m, ok) in [(Membership::Standalone, true), (Membership::Alias("A".into()), true), (Membership::Variant("V".into()), true), (Membership::Case, false)] {
+            p.membership = m;
+            assert_eq!(p.editable(), ok);
+        }
+    }
+
+    #[test]
     fn required_fields() {
         let e = |d: ProductDraft| d.into_write(None).unwrap_err().to_string();
         assert_eq!(e(draft("", "X", 0)), "Barcode and Name are required.");
@@ -234,8 +313,8 @@ mod tests {
     #[test]
     fn barcode_change_warns_only_when_it_really_changes() {
         let original = ProductDetail {
-            id: 1, barcode: "ABC123".into(), name: "X".into(), group_id: None, cost_cents: 0,
-            price_cents: 0, gct: true, membership: Membership::Standalone,
+            id: 1, barcode: "ABC123".into(), name: "X".into(), group_id: None, alias_group_id: None,
+            variant_group_id: None, cost_cents: 0, price_cents: 0, gct: true, membership: Membership::Standalone,
         };
         assert!(warnings_for_edit(&original, &draft(" abc123 ", "X", 0)).is_empty(), "case and spaces only");
         let w = warnings_for_edit(&original, &draft("zzz", "X", 0));

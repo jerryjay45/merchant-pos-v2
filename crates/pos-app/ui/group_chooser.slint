@@ -1,0 +1,134 @@
+// Pick an alias or variant group: type to filter, click a name, or create a new group from
+// the typed text (port of ui/shared/searchable_group_combo.py).
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { OutlineButton, Field } from "widgets.slint";
+
+export component GroupChooser inherits Rectangle {
+    in property <string> title;
+    in-out property <string> search;
+    in property <[string]> items;
+    /// The currently chosen group name, marked in the list ("" = none).
+    in property <string> current;
+    /// Non-empty: offer "create this group" (the typed text has no exact match).
+    in property <string> create-text;
+    in property <string> error-text;
+
+    callback searched(string);
+    callback submitted();      // Enter in the search box
+    callback picked(int);      // index in `items`
+    callback none();
+    callback create();
+    callback cancel();
+
+    background: #00000066;
+    TouchArea { }
+    init => { search-field.focus-input(); }
+
+    Rectangle {
+        width: min(440px, parent.width - 40px);
+        height: min(540px, parent.height - 40px);
+        background: white;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Theme.border;
+        clip: true;
+
+        VerticalLayout {
+            Rectangle {
+                height: 44px;
+                background: Theme.dark;
+                Rectangle { y: parent.height - 2px; height: 2px; background: Theme.accent; }
+                Text { x: 18px; text: root.title; color: white; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+            }
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+                vertical-stretch: 1;
+
+                search-field := Field {
+                    text <=> root.search;
+                    placeholder: "Search or type a new name...";
+                    force-upper: true;
+                    edited(t) => { root.searched(t); }
+                    accepted => { root.submitted(); }
+                }
+
+                // "— None —" first, then the groups
+                Rectangle {
+                    height: 34px;
+                    border-radius: 6px;
+                    background: none-touch.has-hover ? #FFF8EA : transparent;
+                    Text {
+                        x: 10px;
+                        text: "—  None  —";
+                        font-size: 13px;
+                        color: Theme.muted;
+                        vertical-alignment: center;
+                    }
+                    none-touch := TouchArea { clicked => { root.none(); } }
+                }
+
+                ListView {
+                    vertical-stretch: 1;
+                    for name[i] in root.items : Rectangle {
+                        height: 34px;
+                        border-radius: 6px;
+                        background: row-touch.has-hover ? #FFF8EA : name == root.current ? #FFF4DE : transparent;
+                        Text {
+                            x: 10px;
+                            width: parent.width - 20px;
+                            text: name;
+                            font-size: 13px;
+                            font-weight: name == root.current ? 700 : 500;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        row-touch := TouchArea { clicked => { root.picked(i); } }
+                    }
+                }
+
+                if root.items.length == 0 && root.create-text == "" : Text {
+                    text: "No groups yet. Type a name to create one.";
+                    font-size: 12px;
+                    color: Theme.muted;
+                    horizontal-alignment: center;
+                }
+
+                if root.create-text != "" : Rectangle {
+                    height: 38px;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                    background: create-touch.has-hover ? #FFF4DE : #FFFBF2;
+                    Text {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        text: root.create-text;
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: #955E12;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    create-touch := TouchArea { clicked => { root.create(); } }
+                }
+
+                if root.error-text != "" : Text {
+                    text: root.error-text;
+                    color: Theme.red;
+                    font-size: 12px;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    OutlineButton { width: 100px; text: "Cancel"; clicked => { root.cancel(); } }
+                }
+            }
+        }
+    }
+}

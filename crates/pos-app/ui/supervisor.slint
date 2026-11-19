@@ -2,6 +2,7 @@ import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Field, OutlineButton, AmberButton } from "widgets.slint";
 import { ProductForm } from "product_form.slint";
+import { GroupChooser } from "group_chooser.slint";
 
 // Supervisor / manager window: areas across the top, pages inside each area, the page below.
 // Same structure as the Python app (Sales / Inventory / Printing / Data / Setup). The areas and
@@ -300,9 +301,19 @@ export component SupervisorWindow inherits Window {
     in property <[string]> form-group-names;
     in-out property <int> form-group-index;
     in-out property <bool> form-gct: true;
+    in property <string> form-alias-name;
+    in property <string> form-variant-name;
     in property <string> form-price-text;
     in property <string> form-price-hint;
     in property <string> form-error;
+
+    // Alias / variant group chooser (opens over the dialog while chooser-title is set)
+    in property <string> chooser-title;
+    in-out property <string> chooser-search;
+    in property <[string]> chooser-items;
+    in property <string> chooser-current;
+    in property <string> chooser-create-text;
+    in property <string> chooser-error;
 
     // Yes/No question (or a plain notice when confirm-cancel-visible is false); open while the title is set.
     in property <string> confirm-title;
@@ -313,6 +324,14 @@ export component SupervisorWindow inherits Window {
     callback add-product();
     callback edit-product(int);
     callback delete-product(int);
+    callback form-pick-alias();
+    callback form-pick-variant();
+    callback chooser-searched(string);
+    callback chooser-submitted();
+    callback chooser-picked(int);
+    callback chooser-none();
+    callback chooser-create();
+    callback chooser-cancelled();
     callback form-changed();
     callback form-save();
     callback form-cancel();
@@ -453,6 +472,10 @@ export component SupervisorWindow inherits Window {
         group-names: root.form-group-names;
         group-index <=> root.form-group-index;
         gct <=> root.form-gct;
+        alias-name: root.form-alias-name;
+        variant-name: root.form-variant-name;
+        pick-alias => { root.form-pick-alias(); }
+        pick-variant => { root.form-pick-variant(); }
         price-text: root.form-price-text;
         price-hint: root.form-price-hint;
         error-text: root.form-error;
@@ -460,6 +483,23 @@ export component SupervisorWindow inherits Window {
         save => { root.form-save(); }
         cancel => { root.form-cancel(); }
         delete => { root.form-delete(); }
+    }
+
+    if root.chooser-title != "" : GroupChooser {
+        width: parent.width;
+        height: parent.height;
+        title: root.chooser-title;
+        search <=> root.chooser-search;
+        items: root.chooser-items;
+        current: root.chooser-current;
+        create-text: root.chooser-create-text;
+        error-text: root.chooser-error;
+        searched(t) => { root.chooser-searched(t); }
+        submitted => { root.chooser-submitted(); }
+        picked(i) => { root.chooser-picked(i); }
+        none => { root.chooser-none(); }
+        create => { root.chooser-create(); }
+        cancel => { root.chooser-cancelled(); }
     }
 
     if root.confirm-title != "" : Rectangle {

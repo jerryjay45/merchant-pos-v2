@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use crate::{
-    product_edit::{Group, ProductDetail, ProductError, ProductWrite, UpdateOutcome},
+    product_edit::{Group, GroupKind, PriceGroup, ProductDetail, ProductError, ProductWrite, UpdateOutcome},
     repo::StorageError,
 };
 
@@ -74,10 +74,19 @@ pub trait ProductRepository: Send + Sync {
     fn get(&self, id: i64) -> Result<Option<ProductDetail>, StorageError>;
     /// Product groups (name order) with their markups, for the Product Group dropdown.
     fn groups(&self) -> Result<Vec<Group>, StorageError>;
-    /// Adds a standalone product; returns its id.
+    /// The alias or variant groups, by name.
+    fn price_groups(&self, kind: GroupKind) -> Result<Vec<PriceGroup>, StorageError>;
+    /// Creates an empty group (cost and price 0). The name is upper-cased; a name that exists
+    /// is refused.
+    fn create_price_group(&self, kind: GroupKind, name: &str) -> Result<PriceGroup, ProductError>;
+    /// Adds a product (not a case item); returns its id. Joining a group that has no cost yet
+    /// sets the group's cost and price from this product; joining a priced group leaves the
+    /// group alone, and the product follows it.
     fn add(&self, product: &ProductWrite) -> Result<i64, ProductError>;
-    /// Saves an edit of a standalone product. When the cost changed, the case products linked to
-    /// it are recalculated in the same transaction (`case_profit_pct`, default 10 %).
+    /// Saves an edit (not of a case item) in one transaction. Changing the cost, or the markup
+    /// group, of a member of an alias or variant group sets the group's cost and price (so every
+    /// member follows, the group being authoritative). Changing a cost recalculates the case
+    /// products linked to the product or the group (`case_profit_pct`, default 10 %).
     fn update(&self, id: i64, product: &ProductWrite, case_profit_pct: f64) -> Result<UpdateOutcome, ProductError>;
     /// Returns false when the product doesn't exist.
     fn delete(&self, id: i64) -> Result<bool, StorageError>;
@@ -92,6 +101,12 @@ impl<T: ProductRepository + ?Sized> ProductRepository for Arc<T> {
     }
     fn groups(&self) -> Result<Vec<Group>, StorageError> {
         (**self).groups()
+    }
+    fn price_groups(&self, kind: GroupKind) -> Result<Vec<PriceGroup>, StorageError> {
+        (**self).price_groups(kind)
+    }
+    fn create_price_group(&self, kind: GroupKind, name: &str) -> Result<PriceGroup, ProductError> {
+        (**self).create_price_group(kind, name)
     }
     fn add(&self, p: &ProductWrite) -> Result<i64, ProductError> {
         (**self).add(p)

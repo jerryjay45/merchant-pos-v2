@@ -6,7 +6,7 @@ use std::{path::Path, sync::Mutex};
 use pos_core::{
     money::to_cents,
     product::{Membership, ProductPage, ProductQuery, ProductRepository, ProductRow},
-    product_edit::{Group, ProductDetail, ProductError, ProductWrite, UpdateOutcome},
+    product_edit::{Group, GroupKind, GroupSync, PriceGroup, ProductDetail, ProductError, ProductWrite, UpdateOutcome},
     repo::StorageError,
 };
 use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
@@ -181,62 +181,108 @@ impl ProductRepository for ProductsDb {
         Ok(rows)
     }
 
-    fn add(&self, p: &ProductWrite) -> Result<i64, ProductError> {
+    fn price_groups(&self, kind: GroupKind) -> Result<Vec<PriceGroup>, StorageError> {
         let conn = self.conn.lock().map_err(storage)?;
-        conn.execute(
-            "INSERT INTO products (barcode, name, cost, selling_price, group_id, gct_applicable)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![p.barcode, p.name, dollars(p.cost_cents), dollars(p.price_cents), p.group_id, p.gct as i64],
+        let mut stmt = conn
+            .prepare(&format!("SELECT id, name, cost, selling_price FROM {} ORDER BY name", group_table(kind)))
+            .map_err(storage)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(PriceGroup { id: r.get(0)?, name: r.get(1)?, cost_cents: to_cents(r.get::<_, f64>(2)?), price_cents: to_cents(r.get::<_, f64>(3)?) })
+            })
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        Ok(rows)
+    }
+
+    fn create_price_group(&self, kind: GroupKind, name: &str) -> Result<PriceGroup, ProductError> {
+        let name = name.trim().to_uppercase();
+        if name.is_empty() {
+            return Err(ProductError::Invalid("Enter a group name.".into()));
+        }
+        let conn = self.conn.lock().map_err(storage)?;
+        let table = group_table(kind);
+        let exists = conn
+            .query_row(&format!("SELECT 1 FROM {table} WHERE name = ?1"), [&name], |_| Ok(()))
+            .optional()
+            .map_err(storage)?
+            .is_some();
+        if exists {
+            return Err(ProductError::Invalid(format!("An {} group named \"{name}\" already exists.", kind.label())));
+        }
+        conn.execute(&format!("INSERT INTO {table} (name) VALUES (?1)"), [&name]).map_err(storage)?;
+        Ok(PriceGroup { id: conn.last_insert_rowid(), name, cost_cents: 0, price_cents: 0 })
+    }
+
+    fn add(&self, p: &ProductWrite) -> Result<i64, ProductError> {
+        let mut conn = self.conn.lock().map_err(storage)?;
+        let tx = conn.transaction().map_err(storage)?;
+        tx.execute(
+            "INSERT INTO products (barcode, name, cost, selling_price, group_id, alias_group_id, variant_group_id, gct_applicable)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![p.barcode, p.name, dollars(p.cost_cents), dollars(p.price_cents), p.group_id, p.alias_group_id, p.variant_group_id, p.gct as i64],
         )
         .map_err(|e| write_error(e, &p.barcode))?;
-        Ok(conn.last_insert_rowid())
+        let id = tx.last_insert_rowid();
+        // Joining a group that has no price yet: this product sets it.
+        if let Some((kind, gid)) = target_group(p) {
+            if group_row(&tx, kind, gid).map_err(storage)?.is_some_and(|(_, cost)| cost == 0) {
+                push_to_group(&tx, kind, gid, p.cost_cents, p.price_cents).map_err(storage)?;
+            }
+        }
+        tx.commit().map_err(storage)?;
+        Ok(id)
     }
 
     fn update(&self, id: i64, p: &ProductWrite, case_profit_pct: f64) -> Result<UpdateOutcome, ProductError> {
         let mut conn = self.conn.lock().map_err(storage)?;
         let tx = conn.transaction().map_err(storage)?;
         let before = get_detail(&tx, id).map_err(storage)?.ok_or(ProductError::NotFound)?;
-        if before.membership != Membership::Standalone {
-            return Err(ProductError::Invalid(
-                "Products in an alias or variant group, and case items, can't be edited here yet.".into(),
-            ));
+        if !before.editable() {
+            return Err(ProductError::Invalid("Case items can't be edited here yet.".into()));
         }
         tx.execute(
             "UPDATE products SET barcode = ?1, name = ?2, cost = ?3, selling_price = ?4, group_id = ?5,
-                    gct_applicable = ?6, updated_at = datetime('now', 'localtime')
-             WHERE id = ?7",
-            params![p.barcode, p.name, dollars(p.cost_cents), dollars(p.price_cents), p.group_id, p.gct as i64, id],
+                    alias_group_id = ?6, variant_group_id = ?7, gct_applicable = ?8,
+                    updated_at = datetime('now', 'localtime')
+             WHERE id = ?9",
+            params![p.barcode, p.name, dollars(p.cost_cents), dollars(p.price_cents), p.group_id, p.alias_group_id, p.variant_group_id, p.gct as i64, id],
         )
         .map_err(|e| write_error(e, &p.barcode))?;
 
-        // A changed single-product cost flows to its cases (cascade_single_cost_to_cases in Python).
-        let mut cases_updated = 0;
-        if before.cost_cents != p.cost_cents && p.cost_cents > 0 {
-            let cases: Vec<(i64, Option<i64>)> = {
-                let mut stmt = tx
-                    .prepare("SELECT id, case_qty FROM products WHERE is_case = 1 AND case_product_id = ?1")
-                    .map_err(storage)?;
-                let rows = stmt
-                    .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
-                    .map_err(storage)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(storage)?;
-                rows
-            };
-            for (case_id, qty) in cases {
-                let case_cost = (dollars(p.cost_cents) * qty.unwrap_or(1).max(1) as f64 * 1e4).round() / 1e4;
-                let case_price = (case_cost * (1.0 + case_profit_pct) * 100.0).round() / 100.0;
-                tx.execute(
-                    "UPDATE products SET cost = ?1, selling_price = ?2, updated_at = datetime('now', 'localtime')
-                     WHERE id = ?3",
-                    params![case_cost, case_price, case_id],
-                )
-                .map_err(storage)?;
-                cases_updated += 1;
+        let mut out = UpdateOutcome::default();
+        let cost_changed = before.cost_cents != p.cost_cents;
+
+        // The group is authoritative: a member's changed cost (or markup group) is pushed up to it.
+        // Joining a group instead leaves a priced group alone (the product follows it).
+        if let Some((kind, gid)) = target_group(p) {
+            if let Some((name, group_cost)) = group_row(&tx, kind, gid).map_err(storage)? {
+                let was_member = match kind {
+                    GroupKind::Alias => before.alias_group_id == Some(gid),
+                    GroupKind::Variant => before.variant_group_id == Some(gid),
+                };
+                let push = if was_member { cost_changed || before.group_id != p.group_id } else { group_cost == 0 };
+                if push {
+                    push_to_group(&tx, kind, gid, p.cost_cents, p.price_cents).map_err(storage)?;
+                    out.group_sync = Some(GroupSync { group_name: name, cost_cents: p.cost_cents, price_cents: p.price_cents });
+                    out.repriced_cases.extend(match kind {
+                        GroupKind::Alias => cascade_alias_group(&tx, gid, case_profit_pct),
+                        GroupKind::Variant => cascade_variant_group(&tx, gid, case_profit_pct),
+                    }?);
+                }
+            }
+        }
+        // A changed single-product cost flows to its own cases (cascade_single_cost_to_cases).
+        if cost_changed && p.cost_cents > 0 {
+            for name in cascade_single(&tx, id, p.cost_cents, case_profit_pct)? {
+                if !out.repriced_cases.contains(&name) {
+                    out.repriced_cases.push(name);
+                }
             }
         }
         tx.commit().map_err(storage)?;
-        Ok(UpdateOutcome { cases_updated })
+        Ok(out)
     }
 
     fn delete(&self, id: i64) -> Result<bool, StorageError> {
@@ -247,6 +293,108 @@ impl ProductRepository for ProductsDb {
 
 fn dollars(cents: i64) -> f64 {
     cents as f64 / 100.0
+}
+
+fn group_table(kind: GroupKind) -> &'static str {
+    match kind {
+        GroupKind::Alias => "alias_groups",
+        GroupKind::Variant => "variant_groups",
+    }
+}
+
+/// The alias or variant group a write puts the product in (never both; core refuses that).
+fn target_group(p: &ProductWrite) -> Option<(GroupKind, i64)> {
+    match (p.alias_group_id, p.variant_group_id) {
+        (Some(g), _) => Some((GroupKind::Alias, g)),
+        (None, Some(g)) => Some((GroupKind::Variant, g)),
+        _ => None,
+    }
+}
+
+/// (name, cost in cents) of a group.
+fn group_row(conn: &Connection, kind: GroupKind, id: i64) -> rusqlite::Result<Option<(String, i64)>> {
+    conn.query_row(&format!("SELECT name, cost FROM {} WHERE id = ?1", group_table(kind)), [id], |r| {
+        Ok((r.get::<_, String>(0)?, to_cents(r.get::<_, f64>(1)?)))
+    })
+    .optional()
+}
+
+fn push_to_group(conn: &Connection, kind: GroupKind, id: i64, cost_cents: i64, price_cents: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        &format!("UPDATE {} SET cost = ?1, selling_price = ?2 WHERE id = ?3", group_table(kind)),
+        params![dollars(cost_cents), dollars(price_cents), id],
+    )
+}
+
+/// case cost = unit cost x units (4 decimals), case price = case cost + `pct` (2 decimals).
+fn reprice_case(conn: &Connection, case_id: i64, qty: Option<i64>, unit_cost: f64, pct: f64) -> Result<(), StorageError> {
+    let case_cost = (unit_cost * qty.unwrap_or(1).max(1) as f64 * 1e4).round() / 1e4;
+    let case_price = (case_cost * (1.0 + pct) * 100.0).round() / 100.0;
+    conn.execute(
+        "UPDATE products SET cost = ?1, selling_price = ?2, updated_at = datetime('now', 'localtime') WHERE id = ?3",
+        params![case_cost, case_price, case_id],
+    )
+    .map_err(storage)?;
+    Ok(())
+}
+
+fn cases_where(conn: &Connection, filter: &str, arg: i64) -> Result<Vec<(i64, Option<i64>, String)>, StorageError> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT id, case_qty, name FROM products WHERE is_case = 1 AND {filter}"))
+        .map_err(storage)?;
+    let rows = stmt
+        .query_map([arg], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage)?;
+    Ok(rows)
+}
+
+fn group_unit_cost(conn: &Connection, kind: GroupKind, gid: i64) -> Result<Option<f64>, StorageError> {
+    let cost: Option<f64> = conn
+        .query_row(&format!("SELECT cost FROM {} WHERE id = ?1", group_table(kind)), [gid], |r| r.get(0))
+        .optional()
+        .map_err(storage)?;
+    Ok(cost.filter(|c| *c > 0.0))
+}
+
+/// Cases of the group's members follow the group's cost (cascade_alias_group_to_cases).
+fn cascade_alias_group(conn: &Connection, gid: i64, pct: f64) -> Result<Vec<String>, StorageError> {
+    let Some(cost) = group_unit_cost(conn, GroupKind::Alias, gid)? else { return Ok(Vec::new()) };
+    let mut names = Vec::new();
+    let members: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM products WHERE alias_group_id = ?1").map_err(storage)?;
+        let rows = stmt.query_map([gid], |r| r.get(0)).map_err(storage)?.collect::<Result<Vec<_>, _>>().map_err(storage)?;
+        rows
+    };
+    for m in members {
+        for (case_id, qty, name) in cases_where(conn, "case_product_id = ?1", m)? {
+            reprice_case(conn, case_id, qty, cost, pct)?;
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
+/// Cases linked to the variant group itself follow its cost (cascade_variant_group_to_cases).
+fn cascade_variant_group(conn: &Connection, gid: i64, pct: f64) -> Result<Vec<String>, StorageError> {
+    let Some(cost) = group_unit_cost(conn, GroupKind::Variant, gid)? else { return Ok(Vec::new()) };
+    let mut names = Vec::new();
+    for (case_id, qty, name) in cases_where(conn, "case_variant_group_id = ?1", gid)? {
+        reprice_case(conn, case_id, qty, cost, pct)?;
+        names.push(name);
+    }
+    Ok(names)
+}
+
+/// Cases linked to this single product follow its cost (cascade_single_cost_to_cases).
+fn cascade_single(conn: &Connection, product_id: i64, cost_cents: i64, pct: f64) -> Result<Vec<String>, StorageError> {
+    let mut names = Vec::new();
+    for (case_id, qty, name) in cases_where(conn, "case_product_id = ?1", product_id)? {
+        reprice_case(conn, case_id, qty, dollars(cost_cents), pct)?;
+        names.push(name);
+    }
+    Ok(names)
 }
 
 /// A UNIQUE failure on the barcode becomes its own error so the form can say so.
@@ -263,8 +411,9 @@ fn write_error(e: rusqlite::Error, barcode: &str) -> ProductError {
 
 fn get_detail(conn: &Connection, id: i64) -> rusqlite::Result<Option<ProductDetail>> {
     conn.query_row(
-        "SELECT p.id, p.barcode, p.name, p.group_id, p.cost, p.selling_price, p.gct_applicable,
-                p.is_case, ag.name, vg.name
+        "SELECT p.id, p.barcode, p.name, p.group_id,
+                COALESCE(vg.cost, ag.cost, p.cost), COALESCE(vg.selling_price, ag.selling_price, p.selling_price),
+                p.gct_applicable, p.is_case, ag.name, vg.name, p.alias_group_id, p.variant_group_id
          FROM products p
          LEFT JOIN alias_groups   ag ON ag.id = p.alias_group_id
          LEFT JOIN variant_groups vg ON vg.id = p.variant_group_id
@@ -283,6 +432,8 @@ fn get_detail(conn: &Connection, id: i64) -> rusqlite::Result<Option<ProductDeta
                 barcode: r.get(1)?,
                 name: r.get(2)?,
                 group_id: r.get(3)?,
+                alias_group_id: r.get(10)?,
+                variant_group_id: r.get(11)?,
                 cost_cents: to_cents(r.get::<_, f64>(4)?),
                 price_cents: to_cents(r.get::<_, f64>(5)?),
                 gct: r.get::<_, i64>(6)? != 0,
@@ -461,7 +612,7 @@ mod tests {
     // ── add / edit / delete ──
 
     fn write(barcode: &str, name: &str, cost: i64, price: i64, group: Option<i64>) -> ProductWrite {
-        ProductWrite { barcode: barcode.into(), name: name.into(), cost_cents: cost, price_cents: price, group_id: group, gct: true }
+        ProductWrite { barcode: barcode.into(), name: name.into(), cost_cents: cost, price_cents: price, group_id: group, alias_group_id: None, variant_group_id: None, gct: true }
     }
 
     #[test]
@@ -497,7 +648,7 @@ mod tests {
         let db = ProductsDb::open_in_memory().unwrap();
         let id = db.add(&write("111", "MILK 1L", 12_000, 15_000, None)).unwrap();
         let out = db.update(id, &write("999", "OAT MILK", 13_000, 16_900, None), 0.10).unwrap();
-        assert_eq!(out.cases_updated, 0);
+        assert!(out.repriced_cases.is_empty() && out.group_sync.is_none());
         let p = db.get(id).unwrap().unwrap();
         assert_eq!((p.barcode.as_str(), p.name.as_str(), p.cost_cents, p.price_cents), ("999", "OAT MILK", 13_000, 16_900));
         let q = |s: &str| db.list(&ProductQuery { search: s.into(), limit: 10, offset: 0 }).unwrap().total;
@@ -518,30 +669,140 @@ mod tests {
         })
         .unwrap();
         // name-only edit: the case is left alone
-        assert_eq!(db.update(single, &write("111", "COLA 330", 100, 150, None), 0.10).unwrap().cases_updated, 0);
+        assert!(db.update(single, &write("111", "COLA 330", 100, 150, None), 0.10).unwrap().repriced_cases.is_empty());
         // cost 1.00 -> 1.50: case = 24 x 1.50 = 36.00, price = 36.00 x 1.10 = 39.60
-        assert_eq!(db.update(single, &write("111", "COLA 330", 150, 225, None), 0.10).unwrap().cases_updated, 1);
+        assert_eq!(db.update(single, &write("111", "COLA 330", 150, 225, None), 0.10).unwrap().repriced_cases, ["COLA CASE"]);
         let (cost, price): (f64, f64) =
             db.with_conn(|c| c.query_row("SELECT cost, selling_price FROM products WHERE barcode='111C'", [], |r| Ok((r.get(0)?, r.get(1)?)))).unwrap();
         assert_eq!((cost, price), (36.0, 39.6));
     }
 
     #[test]
-    fn grouped_and_case_products_are_not_editable_yet() {
+    fn case_items_are_not_editable_yet() {
         let db = ProductsDb::open_in_memory().unwrap();
+        db.with_conn(|c| c.execute_batch("INSERT INTO products (barcode, name, is_case, case_qty) VALUES ('C1', 'BOX', 1, 6);")).unwrap();
+        let id: i64 = db.with_conn(|c| c.query_row("SELECT id FROM products WHERE barcode='C1'", [], |r| r.get(0))).unwrap();
+        assert!(matches!(db.update(id, &write("C1", "NEW", 1, 1, None), 0.10), Err(ProductError::Invalid(_))));
+        assert_eq!(db.get(id).unwrap().unwrap().name, "BOX");
+    }
+
+    // ── alias / variant groups ──
+
+    fn in_group(kind: GroupKind, gid: i64, barcode: &str, name: &str, cost: i64, price: i64) -> ProductWrite {
+        let mut w = write(barcode, name, cost, price, None);
+        match kind {
+            GroupKind::Alias => w.alias_group_id = Some(gid),
+            GroupKind::Variant => w.variant_group_id = Some(gid),
+        }
+        w
+    }
+
+    fn group_values(db: &ProductsDb, table: &str, gid: i64) -> (f64, f64) {
+        db.with_conn(|c| c.query_row(&format!("SELECT cost, selling_price FROM {table} WHERE id=?1"), [gid], |r| Ok((r.get(0)?, r.get(1)?)))).unwrap()
+    }
+
+    #[test]
+    fn price_groups_are_listed_and_created_upper_case_without_duplicates() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        let soda = db.create_price_group(GroupKind::Alias, " soda 45 ").unwrap();
+        assert_eq!((soda.name.as_str(), soda.cost_cents, soda.price_cents), ("SODA 45", 0, 0));
+        db.create_price_group(GroupKind::Alias, "JUICE").unwrap();
+        db.create_price_group(GroupKind::Variant, "SODA 45").unwrap(); // the other kind is a separate list
+        assert_eq!(db.price_groups(GroupKind::Alias).unwrap().iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["JUICE", "SODA 45"]);
+        assert_eq!(db.price_groups(GroupKind::Variant).unwrap().len(), 1);
+        assert_eq!(
+            db.create_price_group(GroupKind::Alias, "soda 45"),
+            Err(ProductError::Invalid("An alias group named \"SODA 45\" already exists.".into()))
+        );
+        assert!(db.create_price_group(GroupKind::Variant, "  ").is_err());
+    }
+
+    #[test]
+    fn first_product_in_a_new_group_sets_the_groups_price_later_ones_follow_it() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        let g = db.create_price_group(GroupKind::Alias, "SODA 45").unwrap().id;
+        let first = db.add(&in_group(GroupKind::Alias, g, "1", "7UP", 3000, 4500)).unwrap();
+        assert_eq!(group_values(&db, "alias_groups", g), (30.0, 45.0));
+        let listed = db.price_groups(GroupKind::Alias).unwrap();
+        assert_eq!((listed[0].cost_cents, listed[0].price_cents), (3000, 4500));
+        // a second product joins with different numbers: the group keeps its own
+        let second = db.add(&in_group(GroupKind::Alias, g, "2", "PEPSI", 100, 150)).unwrap();
+        assert_eq!(group_values(&db, "alias_groups", g), (30.0, 45.0));
+        for id in [first, second] {
+            let p = db.get(id).unwrap().unwrap();
+            assert_eq!((p.cost_cents, p.price_cents), (3000, 4500), "effective values come from the group");
+            assert_eq!(p.membership, Membership::Alias("SODA 45".into()));
+        }
+    }
+
+    #[test]
+    fn changing_a_members_cost_changes_the_group_and_every_member_and_their_cases() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        let g = db.create_price_group(GroupKind::Alias, "SODA 45").unwrap().id;
+        let a = db.add(&in_group(GroupKind::Alias, g, "1", "7UP", 3000, 4500)).unwrap();
+        let b = db.add(&in_group(GroupKind::Alias, g, "2", "PEPSI", 3000, 4500)).unwrap();
         db.with_conn(|c| {
-            c.execute_batch(
-                "INSERT INTO alias_groups (name, cost, selling_price) VALUES ('SODA', 1, 2);
-                 INSERT INTO products (barcode, name, alias_group_id) VALUES ('A1', 'FANTA', 1);
-                 INSERT INTO products (barcode, name, is_case, case_qty) VALUES ('C1', 'BOX', 1, 6);",
-            )
+            c.execute("INSERT INTO products (barcode, name, cost, selling_price, is_case, case_qty, case_product_id) VALUES ('2C', 'PEPSI CASE', 720, 792, 1, 24, ?1)", [b])
         })
         .unwrap();
-        for barcode in ["A1", "C1"] {
-            let id: i64 = db.with_conn(|c| c.query_row("SELECT id FROM products WHERE barcode=?1", [barcode], |r| r.get(0))).unwrap();
-            assert!(matches!(db.update(id, &write(barcode, "NEW", 1, 1, None), 0.10), Err(ProductError::Invalid(_))), "{barcode}");
-            assert_eq!(db.get(id).unwrap().unwrap().name != "NEW", true);
-        }
+        // name-only edit: nothing is pushed to the group
+        let out = db.update(a, &in_group(GroupKind::Alias, g, "1", "7UP 500ML", 3000, 4500), 0.10).unwrap();
+        assert_eq!(out, UpdateOutcome::default());
+        // cost 30.00 -> 33.00, price 45.00 -> 49.50
+        let out = db.update(a, &in_group(GroupKind::Alias, g, "1", "7UP 500ML", 3300, 4950), 0.10).unwrap();
+        assert_eq!(out.group_sync, Some(GroupSync { group_name: "SODA 45".into(), cost_cents: 3300, price_cents: 4950 }));
+        assert_eq!(out.repriced_cases, ["PEPSI CASE"], "the case of the OTHER member is repriced too");
+        assert_eq!(group_values(&db, "alias_groups", g), (33.0, 49.5));
+        let other = db.get(b).unwrap().unwrap();
+        assert_eq!((other.cost_cents, other.price_cents), (3300, 4950));
+        let case_cost: f64 = db.with_conn(|c| c.query_row("SELECT cost FROM products WHERE barcode='2C'", [], |r| r.get(0))).unwrap();
+        assert_eq!(case_cost, 792.0); // 24 x 33.00
+    }
+
+    #[test]
+    fn moving_a_product_into_a_priced_group_does_not_overwrite_it_but_an_empty_group_takes_the_price() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        let priced = db.create_price_group(GroupKind::Variant, "CHIPS").unwrap().id;
+        db.add(&in_group(GroupKind::Variant, priced, "1", "CHIPS BBQ", 10_000, 16_000)).unwrap();
+        let empty = db.create_price_group(GroupKind::Variant, "NEW").unwrap().id;
+        let id = db.add(&write("9", "LONER", 500, 800, None)).unwrap();
+        db.update(id, &in_group(GroupKind::Variant, priced, "9", "LONER", 500, 800), 0.10).unwrap();
+        assert_eq!(group_values(&db, "variant_groups", priced), (100.0, 160.0));
+        db.update(id, &in_group(GroupKind::Variant, empty, "9", "LONER", 500, 800), 0.10).unwrap();
+        assert_eq!(group_values(&db, "variant_groups", empty), (5.0, 8.0));
+        // leaving the group: the product keeps the numbers the form held
+        db.update(id, &write("9", "LONER", 500, 800, None), 0.10).unwrap();
+        assert_eq!(db.get(id).unwrap().unwrap().membership, Membership::Standalone);
+    }
+
+    #[test]
+    fn a_variant_groups_cost_reprices_cases_linked_to_the_group() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        let g = db.create_price_group(GroupKind::Variant, "CHIPS").unwrap().id;
+        let id = db.add(&in_group(GroupKind::Variant, g, "1", "CHIPS BBQ", 100, 160)).unwrap();
+        db.with_conn(|c| {
+            c.execute("INSERT INTO products (barcode, name, cost, selling_price, is_case, case_qty, case_variant_group_id) VALUES ('CC', 'CHIPS BOX', 1, 1, 1, 12, ?1)", [g])
+        })
+        .unwrap();
+        let out = db.update(id, &in_group(GroupKind::Variant, g, "1", "CHIPS BBQ", 120, 190), 0.10).unwrap();
+        assert_eq!(out.repriced_cases, ["CHIPS BOX"]);
+        let (cost, price): (f64, f64) = db.with_conn(|c| c.query_row("SELECT cost, selling_price FROM products WHERE barcode='CC'", [], |r| Ok((r.get(0)?, r.get(1)?)))).unwrap();
+        assert_eq!((cost, price), (14.4, 15.84)); // 12 x 1.20, then +10 %
+    }
+
+    #[test]
+    fn changing_the_markup_group_of_a_member_also_updates_the_group_price() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        db.with_conn(|c| c.execute_batch("INSERT INTO groups (name, profit_margin) VALUES ('GENERAL', 0.25), ('MEATS', 0.35);")).unwrap();
+        let g = db.create_price_group(GroupKind::Alias, "SODA").unwrap().id;
+        let mut w = in_group(GroupKind::Alias, g, "1", "7UP", 10_000, 12_500);
+        w.group_id = Some(1);
+        let id = db.add(&w).unwrap();
+        w.group_id = Some(2);
+        w.price_cents = 13_500;
+        let out = db.update(id, &w, 0.10).unwrap();
+        assert!(out.group_sync.is_some());
+        assert_eq!(group_values(&db, "alias_groups", g), (100.0, 135.0));
     }
 
     #[test]

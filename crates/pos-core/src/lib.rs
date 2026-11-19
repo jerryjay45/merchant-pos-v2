@@ -18,6 +18,6 @@ pub use nav::{areas_for, Area, Page};
 pub use product::{Membership, Pager, ProductPage, ProductQuery, ProductRepository, ProductRow};
 pub use user::{Role, User, UserRecord};
 pub use product_edit::{
-    parse_cost, price_from_markup, price_hint, warnings_for_edit, Group, ProductDetail, ProductDraft, ProductError,
-    ProductWarning, ProductWrite, UpdateOutcome,
+    parse_cost, price_from_markup, price_hint, warnings_for_edit, Group, GroupKind, GroupSync, PriceGroup, ProductDetail,
+    ProductDraft, ProductError, ProductWarning, ProductWrite, UpdateOutcome,
 };
