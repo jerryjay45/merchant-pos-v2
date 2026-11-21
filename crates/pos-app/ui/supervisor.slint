@@ -318,6 +318,15 @@ export component SupervisorWindow inherits Window {
     in-out property <string> form-d2-to;
     in-out property <bool> form-stack;
     in property <string> form-discount-summary;
+    in-out property <bool> form-case;
+    in-out property <int> form-case-link-index;
+    in property <string> form-case-link-name;
+    in-out property <string> form-case-units;
+    in-out property <int> form-case-mode-index;
+    in-out property <string> form-case-discount;
+    in-out property <string> form-case-price;
+    in property <string> form-case-hint;
+    in property <bool> form-cost-locked;
     in property <string> form-price-text;
     in property <string> form-price-hint;
     in property <string> form-error;
@@ -339,6 +348,8 @@ export component SupervisorWindow inherits Window {
     callback add-product();
     callback edit-product(int);
     callback delete-product(int);
+    callback form-case-changed();
+    callback form-pick-case-parent();
     callback form-discount-changed();
     callback form-pick-alias();
     callback form-pick-variant();
@@ -507,6 +518,17 @@ export component SupervisorWindow inherits Window {
         stack <=> root.form-stack;
         discount-summary: root.form-discount-summary;
         discount-changed => { root.form-discount-changed(); }
+        case <=> root.form-case;
+        case-link-index <=> root.form-case-link-index;
+        case-link-name: root.form-case-link-name;
+        case-units <=> root.form-case-units;
+        case-mode-index <=> root.form-case-mode-index;
+        case-discount <=> root.form-case-discount;
+        case-price <=> root.form-case-price;
+        case-hint: root.form-case-hint;
+        cost-locked: root.form-cost-locked;
+        case-changed => { root.form-case-changed(); }
+        pick-case-parent => { root.form-pick-case-parent(); }
         price-text: root.form-price-text;
         price-hint: root.form-price-hint;
         error-text: root.form-error;

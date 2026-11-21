@@ -2,6 +2,7 @@
 //! everything the UI needs goes through the types and traits in this crate.
 
 pub mod auth;
+pub mod case_pricing;
 pub mod discount;
 pub mod money;
 pub mod nav;
@@ -25,3 +26,4 @@ pub use product_edit::{
 pub use discount::{
     apply_discount, fmt_percent, parse_date, AppliedDiscount, DiscountLevel, DiscountSetting, Rule, SlotSetting, SlotSource,
 };
+pub use case_pricing::{follows_unit, price_case, savings_cents, CaseLink, CaseSetting, PriceMode, Unit};
