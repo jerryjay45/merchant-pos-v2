@@ -134,7 +134,7 @@ impl DiscountSetting {
     }
 
     /// One plain-language line per tier for the dialog, e.g.
-    /// `Discount 2: 35% off 3+, 2026-12-01 to 2026-12-24 (not active today)`.
+    /// `Discount 2: 35% off at 3 or more, 2026-12-01 to 2026-12-24 (not active today)`.
     pub fn summary(&self, levels: &[DiscountLevel], today: &str) -> Vec<String> {
         let mut lines: Vec<String> = self
             .rules(levels)
@@ -147,11 +147,12 @@ impl DiscountSetting {
                     (None, None) => String::new(),
                 };
                 let status = if r.active_on(today) { "" } else { " (not active today)" };
-                format!("Discount {}: {}% off {}+{window}{status}", r.slot, fmt_percent(r.percent), r.min_qty)
+                let when = if r.min_qty <= 1 { "any quantity".to_string() } else { format!("{} or more", r.min_qty) };
+                format!("Discount {}: {}% off at {when}{window}{status}", r.slot, fmt_percent(r.percent))
             })
             .collect();
         if self.stack && lines.len() == 2 {
-            lines.push("Both add up when they apply together.".to_string());
+            lines.push("Both discounts add up when they apply together.".to_string());
         }
         lines
     }
@@ -332,11 +333,11 @@ mod tests {
         };
         assert_eq!(
             s.summary(&[], "2026-12-10"),
-            ["Discount 1: 5% off 1+", "Discount 2: 35% off 3+, 2026-12-01 to 2026-12-24"]
+            ["Discount 1: 5% off at any quantity", "Discount 2: 35% off at 3 or more, 2026-12-01 to 2026-12-24"]
         );
-        assert_eq!(s.summary(&[], "2027-01-02")[1], "Discount 2: 35% off 3+, 2026-12-01 to 2026-12-24 (not active today)");
+        assert_eq!(s.summary(&[], "2027-01-02")[1], "Discount 2: 35% off at 3 or more, 2026-12-01 to 2026-12-24 (not active today)");
         let stacked = DiscountSetting { stack: true, ..s };
-        assert_eq!(stacked.summary(&[], "2026-12-10").last().unwrap(), "Both add up when they apply together.");
+        assert_eq!(stacked.summary(&[], "2026-12-10").last().unwrap(), "Both discounts add up when they apply together.");
         assert_eq!(fmt_percent(2.5), "2.5");
         assert_eq!(fmt_percent(33.333), "33.33");
         assert_eq!(fmt_percent(10.0), "10");

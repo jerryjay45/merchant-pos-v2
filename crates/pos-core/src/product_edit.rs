@@ -2,12 +2,11 @@
 //! the product group's markup, what is checked before saving, and what the user should be warned
 //! about first. No UI or database in here.
 //!
-//! Standalone products and members of an alias or variant group can be edited so far; case
-//! items can't yet (`ProductDetail::editable`).
+//! Standalone products, members of an alias or variant group, and case items can all be edited.
 
 use thiserror::Error;
 
-use crate::{discount::DiscountSetting, product::Membership, repo::StorageError};
+use crate::{case_pricing::CaseSetting, discount::DiscountSetting, product::Membership, repo::StorageError};
 
 /// Highest cost the form accepts, in cents (the Python form allows up to 999,999.00).
 pub const MAX_COST_CENTS: i64 = 99_999_900;
@@ -66,14 +65,9 @@ pub struct ProductDetail {
     pub gct: bool,
     /// The product's own discount settings (a group's own, if it has any, take precedence at sale time).
     pub discounts: DiscountSetting,
+    /// `Some` for a case / pack item.
+    pub case: Option<CaseSetting>,
     pub membership: Membership,
-}
-
-impl ProductDetail {
-    /// Case items need the rest of the dialog (units per pack, linked product).
-    pub fn editable(&self) -> bool {
-        !matches!(self.membership, Membership::Case)
-    }
 }
 
 /// What the form collects (before `normalized`).
@@ -87,6 +81,7 @@ pub struct ProductDraft {
     pub variant_group_id: Option<i64>,
     pub gct: bool,
     pub discounts: DiscountSetting,
+    pub case: Option<CaseSetting>,
 }
 
 /// A draft after validation, with the price worked out. This is what gets stored.
@@ -101,6 +96,9 @@ pub struct ProductWrite {
     pub variant_group_id: Option<i64>,
     pub gct: bool,
     pub discounts: DiscountSetting,
+    /// For a case item, `cost_cents` / `price_cents` are what the form showed; the database
+    /// derives the real numbers from the single product at save time (`price_case`).
+    pub case: Option<CaseSetting>,
 }
 
 /// Something the user should confirm before an edit is saved. Typed here so every front end
@@ -198,6 +196,12 @@ impl ProductDraft {
             return invalid("A product can be in an alias group or a variant group, not both.");
         }
         d.discounts.validate().map_err(ProductError::Invalid)?;
+        if let Some(case) = &d.case {
+            case.validate().map_err(ProductError::Invalid)?;
+            if d.alias_group_id.is_some() || d.variant_group_id.is_some() {
+                return invalid("A case item can't also be in an alias group or a variant group.");
+            }
+        }
         Ok(ProductWrite {
             price_cents: price_from_markup(d.cost_cents, markup.unwrap_or(0.0)),
             barcode: d.barcode,
@@ -208,6 +212,7 @@ impl ProductDraft {
             variant_group_id: d.variant_group_id,
             gct: d.gct,
             discounts: d.discounts,
+            case: d.case,
         })
     }
 }
@@ -258,7 +263,7 @@ mod tests {
     use super::*;
 
     fn draft(barcode: &str, name: &str, cost: i64) -> ProductDraft {
-        ProductDraft { barcode: barcode.into(), name: name.into(), cost_cents: cost, group_id: None, alias_group_id: None, variant_group_id: None, gct: true, discounts: Default::default() }
+        ProductDraft { barcode: barcode.into(), name: name.into(), cost_cents: cost, group_id: None, alias_group_id: None, variant_group_id: None, gct: true, discounts: Default::default(), case: None }
     }
 
     #[test]
@@ -297,15 +302,15 @@ mod tests {
     }
 
     #[test]
-    fn only_case_items_are_blocked() {
-        let mut p = ProductDetail {
-            id: 1, barcode: "1".into(), name: "X".into(), group_id: None, alias_group_id: None, variant_group_id: None,
-            cost_cents: 0, price_cents: 0, gct: true, discounts: Default::default(), membership: Membership::Standalone,
-        };
-        for (m, ok) in [(Membership::Standalone, true), (Membership::Alias("A".into()), true), (Membership::Variant("V".into()), true), (Membership::Case, false)] {
-            p.membership = m;
-            assert_eq!(p.editable(), ok);
-        }
+    fn a_case_is_validated_and_cannot_also_be_in_an_alias_or_variant_group() {
+        use crate::case_pricing::{CaseLink, PriceMode};
+        let case = |units| Some(CaseSetting { link: Some(CaseLink::Product(1)), units, mode: PriceMode::Markup });
+        let ok = ProductDraft { case: case(12), ..draft("1", "X", 100) }.into_write(None).unwrap();
+        assert_eq!(ok.case.map(|c| c.units), Some(12));
+        let bad_units = ProductDraft { case: case(0), ..draft("1", "X", 100) }.into_write(None).unwrap_err();
+        assert!(bad_units.to_string().contains("Units per case"));
+        let both = ProductDraft { case: case(12), alias_group_id: Some(1), ..draft("1", "X", 100) }.into_write(None).unwrap_err();
+        assert_eq!(both.to_string(), "A case item can't also be in an alias group or a variant group.");
     }
 
     #[test]
@@ -320,7 +325,7 @@ mod tests {
     fn barcode_change_warns_only_when_it_really_changes() {
         let original = ProductDetail {
             id: 1, barcode: "ABC123".into(), name: "X".into(), group_id: None, alias_group_id: None,
-            variant_group_id: None, cost_cents: 0, price_cents: 0, gct: true, discounts: Default::default(), membership: Membership::Standalone,
+            variant_group_id: None, cost_cents: 0, price_cents: 0, gct: true, discounts: Default::default(), case: None, membership: Membership::Standalone,
         };
         assert!(warnings_for_edit(&original, &draft(" abc123 ", "X", 0)).is_empty(), "case and spaces only");
         let w = warnings_for_edit(&original, &draft("zzz", "X", 0));

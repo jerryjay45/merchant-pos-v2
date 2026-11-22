@@ -82,11 +82,12 @@ pub trait ProductRepository: Send + Sync {
     /// Creates an empty group (cost and price 0). The name is upper-cased; a name that exists
     /// is refused.
     fn create_price_group(&self, kind: GroupKind, name: &str) -> Result<PriceGroup, ProductError>;
-    /// Adds a product (not a case item); returns its id. Joining a group that has no cost yet
+    /// Adds a product; returns its id. Joining a group that has no cost yet
     /// sets the group's cost and price from this product; joining a priced group leaves the
     /// group alone, and the product follows it.
-    fn add(&self, product: &ProductWrite) -> Result<i64, ProductError>;
-    /// Saves an edit (not of a case item) in one transaction. Changing the cost, or the markup
+    fn add(&self, product: &ProductWrite, case_profit_pct: f64) -> Result<i64, ProductError>;
+    /// Saves an edit in one transaction. A case item's cost and price are worked out from its
+    /// single product (or variant group) at this moment, by `price_case`. Changing the cost, or the markup
     /// group, of a member of an alias or variant group sets the group's cost and price (so every
     /// member follows, the group being authoritative). Changing a cost recalculates the case
     /// products linked to the product or the group (`case_profit_pct`, default 10 %).
@@ -114,8 +115,8 @@ impl<T: ProductRepository + ?Sized> ProductRepository for Arc<T> {
     fn create_price_group(&self, kind: GroupKind, name: &str) -> Result<PriceGroup, ProductError> {
         (**self).create_price_group(kind, name)
     }
-    fn add(&self, p: &ProductWrite) -> Result<i64, ProductError> {
-        (**self).add(p)
+    fn add(&self, p: &ProductWrite, pct: f64) -> Result<i64, ProductError> {
+        (**self).add(p, pct)
     }
     fn update(&self, id: i64, p: &ProductWrite, pct: f64) -> Result<UpdateOutcome, ProductError> {
         (**self).update(id, p, pct)
