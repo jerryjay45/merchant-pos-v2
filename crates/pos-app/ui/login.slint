@@ -1,6 +1,7 @@
 // Login screen, ported from ui/login_window.py: white card, amber hex logo,
 // show/hide password, upper-cased input, inline error, zoom controls.
 
+import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { HexLogo, AmberButton, ZoomButton, Field } from "widgets.slint";
 
@@ -33,7 +34,10 @@ export component LoginWindow inherits Window {
     callback username-edited(string);
     callback password-edited(string);
 
-    init => { user-field.focus-input(); }
+    init => {
+        Palette.color-scheme = ColorScheme.light;
+        user-field.focus-input();
+    }
     public function focus-username() { user-field.focus-input(); }
 
     VerticalLayout {

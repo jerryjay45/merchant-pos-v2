@@ -1,4 +1,4 @@
-import { ListView } from "std-widgets.slint";
+import { ListView, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Field, OutlineButton, AmberButton } from "widgets.slint";
 import { ProductForm } from "product_form.slint";
@@ -265,6 +265,8 @@ component ProductsPage inherits Rectangle {
 
 export component SupervisorWindow inherits Window {
     title: "POS System";
+    // The app's colours are all light; keep Slint's own widgets (scroll bars) light too, whatever the desktop theme.
+    init => { Palette.color-scheme = ColorScheme.light; }
     min-width: 1280px;
     min-height: 720px;
     preferred-width: 1280px;

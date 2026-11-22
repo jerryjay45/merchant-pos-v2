@@ -3,6 +3,7 @@
 //        5 Printer (optional), 6 Done.
 // All values live in properties; main.rs validates a page when Next is pressed and moves `page`.
 
+import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { HexLogo, AmberButton, ZoomButton, Field, OutlineButton, FieldLabel, CheckRow, AreaField } from "widgets.slint";
 
@@ -17,6 +18,7 @@ component PageHeader inherits VerticalLayout {
 
 export component SetupWindow inherits Window {
     title: "Merchant POS - Setup Wizard";
+    init => { Palette.color-scheme = ColorScheme.light; }
     background: #FFFFFF;
     min-width: 540px;
     min-height: 660px;
