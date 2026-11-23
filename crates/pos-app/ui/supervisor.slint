@@ -267,8 +267,11 @@ export component SupervisorWindow inherits Window {
     title: "POS System";
     // The app's colours are all light; keep Slint's own widgets (scroll bars) light too, whatever the desktop theme.
     init => { Palette.color-scheme = ColorScheme.light; }
-    min-width: 1280px;
-    min-height: 720px;
+    // Small enough for a 1024x768 screen: the layout holds down to about 960x600 (long product
+    // names get shortened with "..."; the product dialog scrolls). The window opens maximized,
+    // so on a bigger screen it simply fills it; 1280x800 is the size when un-maximized.
+    min-width: 960px;
+    min-height: 600px;
     preferred-width: 1280px;
     preferred-height: 800px;
     background: Theme.warm-white;

@@ -8,7 +8,7 @@ use pos_core::{
     areas_for, format_money, nav, ConfigRepository, Pager, ProductQuery, ProductRepository, ProductRow, Role, User,
 };
 use pos_db::{ConfigDb, ProductsDb};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{platform::WindowEvent, ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::{product_form, NavItem, ProductRowData, SupervisorWindow};
 
@@ -113,6 +113,28 @@ fn show_page(win: &SupervisorWindow, key: &str, title: &str, ctx: &Arc<Ctx>, sta
         *first_time = false; // pages load the first time they are opened, like the Python tabs
         load(win, ctx, state);
     }
+}
+
+/// Shows the window the way a till wants it: maximized, at the zoom saved with the login
+/// screen's zoom buttons (`ui_scale_pct`, 70 to 150, default 100).
+///
+/// The zoom multiplies the window's scale factor, so text, buttons and spacing all grow together.
+pub fn present(win: &SupervisorWindow, ctx: &Ctx) -> Result<(), slint::PlatformError> {
+    win.show()?;
+    // Maximizing is a request to the window manager, so it only works once the window is on screen;
+    // asked for straight after show() it is ignored. Ask again a moment later, from the event loop.
+    let weak = win.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
+        if let Some(w) = weak.upgrade() {
+            w.window().set_maximized(true);
+        }
+    });
+    let pct = ctx.config.get_int("ui_scale_pct", 100).unwrap_or(100).clamp(70, 150);
+    if pct != 100 {
+        let base = win.window().scale_factor();
+        win.window().dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: base * pct as f32 / 100.0 });
+    }
+    Ok(())
 }
 
 /// Builds the window for a signed-in supervisor or manager. `on_logout` runs when Logout is pressed.

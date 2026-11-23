@@ -324,6 +324,7 @@ fn on_signed_in(win: &LoginWindow, user: User, ctx: Arc<supervisor::Ctx>) {
         return;
     }
     let login = win.as_weak();
+    let present_ctx = ctx.clone();
     match supervisor::open(&user, ctx, move || {
         // Show the login window first so the event loop never sees zero open windows.
         if let Some(l) = login.upgrade() {
@@ -337,7 +338,10 @@ fn on_signed_in(win: &LoginWindow, user: User, ctx: Arc<supervisor::Ctx>) {
         });
     }) {
         Ok(sup) => {
-            let _ = sup.show();
+            if let Err(e) = supervisor::present(&sup, &present_ctx) {
+                win.set_error_text(format!("Could not show the window: {e}").into());
+                return;
+            }
             let _ = win.hide();
             OPEN_WINDOW.with(|w| *w.borrow_mut() = Some(sup));
         }
