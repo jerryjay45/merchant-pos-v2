@@ -2,6 +2,7 @@
 //! File layout matches the Python app: `<data dir>/users.db` and `<data dir>/config.db`,
 //! so the Rust app can be pointed at an existing data folder.
 
+mod catalog;
 mod products;
 pub use products::ProductsDb;
 

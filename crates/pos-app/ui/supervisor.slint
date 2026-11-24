@@ -1,8 +1,9 @@
 import { ListView, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Field, OutlineButton, AmberButton } from "widgets.slint";
+import { Field, OutlineButton, AmberButton, SmallButton } from "widgets.slint";
 import { ProductForm } from "product_form.slint";
 import { GroupChooser } from "group_chooser.slint";
+import { GroupsPage, MarkupRowData, LevelRowData } from "groups_page.slint";
 
 // Supervisor / manager window: areas across the top, pages inside each area, the page below.
 // Same structure as the Python app (Sales / Inventory / Printing / Data / Setup). The areas and
@@ -52,27 +53,6 @@ component TabButton inherits Rectangle {
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
-}
-
-component SmallButton inherits Rectangle {
-    in property <string> text;
-    in property <color> tone;
-    in property <color> hover-bg;
-    callback clicked();
-    height: 26px;
-    border-radius: 5px;
-    border-width: 1px;
-    border-color: root.tone;
-    background: touch.has-hover ? root.hover-bg : transparent;
-    Text {
-        text: root.text;
-        font-size: 12px;
-        font-weight: 600;
-        color: root.tone;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-    touch := TouchArea { clicked => { root.clicked(); } }
 }
 
 component ProductsPage inherits Rectangle {
@@ -283,6 +263,27 @@ export component SupervisorWindow inherits Window {
     in property <string> current-area;
     in property <string> current-page;
     in property <bool> page-built;
+
+    // Groups & Discounts page (pos-app/src/groups.rs fills these in)
+    in property <[MarkupRowData]> markup-rows;
+    in property <[LevelRowData]> level-rows;
+    in-out property <string> new-group-name;
+    in-out property <string> case-pct;
+    in-out property <string> new-level-name;
+    in-out property <string> new-level-qty;
+    in-out property <string> new-level-pct;
+    in property <string> groups-status;
+    in property <bool> groups-status-ok;
+    in property <bool> groups-dirty;
+    callback group-markup-edited(int, string);
+    callback delete-group(int);
+    callback add-group();
+    callback case-pct-edited();
+    callback recalc-cases();
+    callback level-edited(int, int, string);
+    callback delete-level(int);
+    callback add-level();
+    callback groups-save();
     in property <string> page-title;
 
     // Products page
@@ -463,7 +464,30 @@ export component SupervisorWindow inherits Window {
                 edit-product(id) => { root.edit-product(id); }
                 delete-product(id) => { root.delete-product(id); }
             }
-            if !(root.current-page == "products" && root.page-built) : Rectangle {
+            if root.current-page == "groups" && root.page-built : GroupsPage {
+                width: parent.width;
+                height: parent.height;
+                groups: root.markup-rows;
+                levels: root.level-rows;
+                new-group-name <=> root.new-group-name;
+                case-pct <=> root.case-pct;
+                new-level-name <=> root.new-level-name;
+                new-level-qty <=> root.new-level-qty;
+                new-level-pct <=> root.new-level-pct;
+                status-text: root.groups-status;
+                status-ok: root.groups-status-ok;
+                dirty: root.groups-dirty;
+                group-markup-edited(i, t) => { root.group-markup-edited(i, t); }
+                delete-group(i) => { root.delete-group(i); }
+                add-group => { root.add-group(); }
+                case-pct-edited => { root.case-pct-edited(); }
+                recalc-cases => { root.recalc-cases(); }
+                level-edited(i, f, t) => { root.level-edited(i, f, t); }
+                delete-level(i) => { root.delete-level(i); }
+                add-level => { root.add-level(); }
+                save => { root.groups-save(); }
+            }
+            if !(root.page-built && (root.current-page == "products" || root.current-page == "groups")) : Rectangle {
                 width: parent.width;
                 height: parent.height;
                 background: Theme.warm-white;

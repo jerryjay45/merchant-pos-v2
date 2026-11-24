@@ -39,7 +39,7 @@ const COUNT_SELECT: &str = "
     WHERE 1=1";
 
 pub struct ProductsDb {
-    conn: Mutex<Connection>,
+    pub(crate) conn: Mutex<Connection>,
 }
 
 impl ProductsDb {
@@ -394,7 +394,7 @@ fn read_slot(level: Option<i64>, qty: Option<i64>, pct: Option<f64>, starts: Opt
     Some(SlotSetting { source, starts, ends })
 }
 
-fn dollars(cents: i64) -> f64 {
+pub(crate) fn dollars(cents: i64) -> f64 {
     cents as f64 / 100.0
 }
 
@@ -430,16 +430,16 @@ fn push_to_group(conn: &Connection, kind: GroupKind, id: i64, cost_cents: i64, p
 }
 
 /// A case item as stored, for repricing.
-struct CaseRow {
-    id: i64,
-    name: String,
-    units: u32,
-    mode: PriceMode,
-    cost_cents: i64,
-    price_cents: i64,
+pub(crate) struct CaseRow {
+    pub(crate) id: i64,
+    pub(crate) name: String,
+    pub(crate) units: u32,
+    pub(crate) mode: PriceMode,
+    pub(crate) cost_cents: i64,
+    pub(crate) price_cents: i64,
 }
 
-fn mode_from_columns(mode: Option<String>, pct: Option<f64>) -> PriceMode {
+pub(crate) fn mode_from_columns(mode: Option<String>, pct: Option<f64>) -> PriceMode {
     match (mode.as_deref(), pct) {
         (Some("pack_discount"), Some(p)) => PriceMode::PackDiscount { percent: p },
         (Some("manual"), _) => PriceMode::Manual,
@@ -448,7 +448,7 @@ fn mode_from_columns(mode: Option<String>, pct: Option<f64>) -> PriceMode {
 }
 
 /// Recalculates one case from its single (see `price_case`). Returns whether anything changed.
-fn reprice_case(conn: &Connection, row: &CaseRow, unit: Unit, profit_pct: f64) -> Result<bool, StorageError> {
+pub(crate) fn reprice_case(conn: &Connection, row: &CaseRow, unit: Unit, profit_pct: f64) -> Result<bool, StorageError> {
     if !follows_unit(unit, row.mode) {
         return Ok(false);
     }
@@ -464,7 +464,7 @@ fn reprice_case(conn: &Connection, row: &CaseRow, unit: Unit, profit_pct: f64) -
     Ok(true)
 }
 
-fn cases_where(conn: &Connection, filter: &str, arg: i64) -> Result<Vec<CaseRow>, StorageError> {
+pub(crate) fn cases_where(conn: &Connection, filter: &str, arg: i64) -> Result<Vec<CaseRow>, StorageError> {
     let mut stmt = conn
         .prepare(&format!(
             "SELECT id, name, case_qty, case_price_mode, pack_discount_pct, cost, selling_price
@@ -488,7 +488,37 @@ fn cases_where(conn: &Connection, filter: &str, arg: i64) -> Result<Vec<CaseRow>
     Ok(rows)
 }
 
-fn group_unit(conn: &Connection, kind: GroupKind, gid: i64) -> Result<Unit, StorageError> {
+/// Every case product with what it is made of: (case, single product id, variant group id).
+pub(crate) fn cases_where_all(conn: &Connection) -> Result<Vec<(CaseRow, Option<i64>, Option<i64>)>, StorageError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, case_qty, case_price_mode, pack_discount_pct, cost, selling_price,
+                    case_product_id, case_variant_group_id
+             FROM products WHERE is_case = 1",
+        )
+        .map_err(storage)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                CaseRow {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    units: r.get::<_, Option<i64>>(2)?.unwrap_or(1).max(1) as u32,
+                    mode: mode_from_columns(r.get(3)?, r.get(4)?),
+                    cost_cents: to_cents(r.get::<_, f64>(5)?),
+                    price_cents: to_cents(r.get::<_, f64>(6)?),
+                },
+                r.get(7)?,
+                r.get(8)?,
+            ))
+        })
+        .map_err(storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage)?;
+    Ok(rows)
+}
+
+pub(crate) fn group_unit(conn: &Connection, kind: GroupKind, gid: i64) -> Result<Unit, StorageError> {
     let unit = conn
         .query_row(&format!("SELECT cost, selling_price FROM {} WHERE id = ?1", group_table(kind)), [gid], |r| {
             Ok(Unit { cost_cents: to_cents(r.get::<_, f64>(0)?), price_cents: to_cents(r.get::<_, f64>(1)?) })
@@ -498,7 +528,7 @@ fn group_unit(conn: &Connection, kind: GroupKind, gid: i64) -> Result<Unit, Stor
     Ok(unit.unwrap_or(Unit { cost_cents: 0, price_cents: 0 }))
 }
 
-fn reprice_all(conn: &Connection, cases: Vec<CaseRow>, unit: Unit, pct: f64, names: &mut Vec<String>) -> Result<(), StorageError> {
+pub(crate) fn reprice_all(conn: &Connection, cases: Vec<CaseRow>, unit: Unit, pct: f64, names: &mut Vec<String>) -> Result<(), StorageError> {
     for c in cases {
         if reprice_case(conn, &c, unit, pct)? && !names.contains(&c.name) {
             names.push(c.name);
@@ -531,7 +561,7 @@ fn cascade_variant_group(conn: &Connection, gid: i64, pct: f64) -> Result<Vec<St
 }
 
 /// Cases made of this single product follow its numbers (cascade_single_cost_to_cases).
-fn cascade_single(conn: &Connection, product_id: i64, unit: Unit, pct: f64) -> Result<Vec<String>, StorageError> {
+pub(crate) fn cascade_single(conn: &Connection, product_id: i64, unit: Unit, pct: f64) -> Result<Vec<String>, StorageError> {
     let mut names = Vec::new();
     reprice_all(conn, cases_where(conn, "case_product_id = ?1", product_id)?, unit, pct, &mut names)?;
     Ok(names)
