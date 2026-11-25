@@ -29,6 +29,6 @@ pub use discount::{
 };
 pub use case_pricing::{follows_unit, price_case, savings_cents, CaseLink, CaseSetting, PriceMode, Unit};
 pub use catalog::{
-    clean_group_name, markup_text, parse_level, parse_markup_percent, CatalogRepository, LevelInput, LevelRow, MarkupChange,
+    clean_group_name, markup_text, parse_level, parse_markup_percent, CatalogRepository, LevelInput, LevelRow, ListPage, ListQuery, MarkupChange,
     MarkupGroupRow, MarkupOutcome,
 };

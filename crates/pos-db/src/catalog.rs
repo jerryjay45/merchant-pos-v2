@@ -3,7 +3,7 @@
 
 use pos_core::{
     case_pricing::Unit,
-    catalog::{clean_group_name, CatalogRepository, LevelInput, LevelRow, MarkupChange, MarkupGroupRow, MarkupOutcome},
+    catalog::{clean_group_name, CatalogRepository, LevelInput, LevelRow, ListPage, ListQuery, MarkupChange, MarkupGroupRow, MarkupOutcome},
     discount::DiscountLevel,
     money::to_cents,
     price_from_markup,
@@ -13,7 +13,7 @@ use pos_core::{
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{
-    products::{cascade_single, cases_where_all, dollars, group_unit, reprice_case, ProductsDb},
+    products::{cascade_single, cases_where_all, dollars, group_unit, like_literal, reprice_case, ProductsDb},
     storage,
 };
 
@@ -54,22 +54,29 @@ fn level_percent_stored(percent: f64) -> f64 {
 }
 
 impl CatalogRepository for ProductsDb {
-    fn markup_groups(&self) -> Result<Vec<MarkupGroupRow>, StorageError> {
+    fn markup_groups(&self, q: &ListQuery) -> Result<ListPage<MarkupGroupRow>, StorageError> {
         let conn = self.conn.lock().map_err(storage)?;
+        let like = like_literal(q.search.trim());
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM groups WHERE name LIKE ?1 ESCAPE '\\'", [&like], |r| r.get(0))
+            .map_err(storage)?;
+        // Only the rows of this page get their product count.
         let mut stmt = conn
             .prepare(
                 "SELECT g.id, g.name, g.profit_margin, (SELECT COUNT(*) FROM products p WHERE p.group_id = g.id)
-                 FROM groups g ORDER BY g.name",
+                 FROM (SELECT id, name, profit_margin FROM groups WHERE name LIKE ?1 ESCAPE '\\'
+                       ORDER BY name LIMIT ?2 OFFSET ?3) g
+                 ORDER BY g.name",
             )
             .map_err(storage)?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map(params![like, q.limit, q.offset], |r| {
                 Ok(MarkupGroupRow { id: r.get(0)?, name: r.get(1)?, markup: r.get(2)?, products: r.get::<_, i64>(3)? as u32 })
             })
             .map_err(storage)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(storage)?;
-        Ok(rows)
+        Ok(ListPage { rows, total: total.max(0) as u64 })
     }
 
     fn add_markup_group(&self, name: &str) -> Result<MarkupGroupRow, ProductError> {
@@ -138,19 +145,25 @@ impl CatalogRepository for ProductsDb {
         Ok(out)
     }
 
-    fn level_rows(&self) -> Result<Vec<LevelRow>, StorageError> {
+    fn level_rows(&self, q: &ListQuery) -> Result<ListPage<LevelRow>, StorageError> {
         let conn = self.conn.lock().map_err(storage)?;
+        let like = like_literal(q.search.trim());
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM discount_levels WHERE name LIKE ?1 ESCAPE '\\'", [&like], |r| r.get(0))
+            .map_err(storage)?;
         let mut stmt = conn
             .prepare(
                 "SELECT l.id, l.name, l.min_qty, l.percent,
                     (SELECT COUNT(*) FROM products p WHERE p.discount_level1_id = l.id OR p.discount_level2_id = l.id)
                   + (SELECT COUNT(*) FROM alias_groups a WHERE a.discount_level1_id = l.id OR a.discount_level2_id = l.id)
                   + (SELECT COUNT(*) FROM variant_groups v WHERE v.discount_level1_id = l.id OR v.discount_level2_id = l.id)
-                 FROM discount_levels l ORDER BY l.min_qty, l.id",
+                 FROM (SELECT id, name, min_qty, percent FROM discount_levels WHERE name LIKE ?1 ESCAPE '\\'
+                       ORDER BY min_qty, id LIMIT ?2 OFFSET ?3) l
+                 ORDER BY l.min_qty, l.id",
             )
             .map_err(storage)?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map(params![like, q.limit, q.offset], |r| {
                 let pct: f64 = r.get(3)?;
                 Ok(LevelRow {
                     level: DiscountLevel {
@@ -165,7 +178,7 @@ impl CatalogRepository for ProductsDb {
             .map_err(storage)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(storage)?;
-        Ok(rows)
+        Ok(ListPage { rows, total: total.max(0) as u64 })
     }
 
     fn add_level(&self, input: &LevelInput) -> Result<LevelRow, ProductError> {
@@ -257,6 +270,18 @@ mod tests {
         }
     }
 
+    fn page(search: &str, limit: u32, offset: u32) -> ListQuery {
+        ListQuery { search: search.into(), limit, offset }
+    }
+
+    fn all_groups(db: &ProductsDb) -> Vec<MarkupGroupRow> {
+        db.markup_groups(&page("", 1000, 0)).unwrap().rows
+    }
+
+    fn all_levels(db: &ProductsDb) -> Vec<LevelRow> {
+        db.level_rows(&page("", 1000, 0)).unwrap().rows
+    }
+
     fn input(name: &str, qty: u32, percent: f64) -> LevelInput {
         LevelInput { name: name.into(), min_qty: qty, percent }
     }
@@ -273,10 +298,10 @@ mod tests {
         assert_eq!(db.add_markup_group("MEATS"), Err(ProductError::Invalid("A group named \"MEATS\" already exists.".into())));
         assert!(db.add_markup_group("  ").is_err());
         let id = db.add(&write("1", "STEAK", 1000, 1000, Some(g.id)), 0.10).unwrap();
-        assert_eq!(db.markup_groups().unwrap()[0].products, 1);
+        assert_eq!(all_groups(&db)[0].products, 1);
         // deleting the group keeps the product and its price
         db.delete_markup_group(g.id).unwrap();
-        assert!(db.markup_groups().unwrap().is_empty());
+        assert!(all_groups(&db).is_empty());
         let p = db.get(id).unwrap().unwrap();
         assert_eq!((p.group_id, p.price_cents), (None, 1000));
     }
@@ -305,7 +330,7 @@ mod tests {
         assert_eq!((price_of(&db, "A"), price_of(&db, "B"), price_of(&db, "D")), (130.0, 260.0, 130.0));
         assert_eq!(price_of(&db, "C"), 135.0, "another group is untouched");
         assert_eq!(price_of(&db, "E"), 125.0, "alias member: the price lives on the alias group");
-        assert_eq!(db.markup_groups().unwrap().iter().find(|g| g.id == general).unwrap().markup, 0.30);
+        assert_eq!(all_groups(&db).iter().find(|g| g.id == general).unwrap().markup, 0.30);
         // saving the same markup again changes nothing
         assert_eq!(db.save_markups(&change, 0.10).unwrap(), MarkupOutcome::default());
     }
@@ -345,18 +370,18 @@ mod tests {
         let product = db.add(&w, 0.10).unwrap();
         let alias = db.create_price_group(GroupKind::Alias, "SODA").unwrap().id;
         db.with_conn(|c| c.execute("UPDATE alias_groups SET discount_level1_id = ?1 WHERE id = ?2", [l1.level.id, alias])).unwrap();
-        let rows = db.level_rows().unwrap();
+        let rows = all_levels(&db);
         assert_eq!(rows.iter().map(|r| (r.level.name.as_str(), r.level.min_qty, r.level.percent, r.in_use)).collect::<Vec<_>>(), [("Level 1", 3, 5.0, 2), ("Level 2", 6, 12.5, 0)]);
 
         // rename and change; the name can't collide with another level's
         db.update_level(l1.level.id, &input("Everyday", 4, 7.5)).unwrap();
         assert!(db.update_level(l1.level.id, &input("Level 2", 4, 7.5)).is_err());
         db.update_level(l1.level.id, &input("Everyday", 5, 8.0)).unwrap(); // keeping its own name is fine
-        assert_eq!(db.level_rows().unwrap()[0].level.percent, 8.0);
+        assert_eq!(all_levels(&db)[0].level.percent, 8.0);
 
         // deleting a level removes it from the products that used it
         db.delete_level(l1.level.id).unwrap();
-        assert_eq!(db.level_rows().unwrap().len(), 1);
+        assert_eq!(all_levels(&db).len(), 1);
         assert_eq!(db.get(product).unwrap().unwrap().discounts.slot1, None);
     }
 
@@ -378,5 +403,71 @@ mod tests {
         assert_eq!(changed, ["MARKUP CASE"]);
         assert_eq!((price_of(&db, "M"), price_of(&db, "P"), price_of(&db, "U")), (14.4, 19.44, 26.0));
         assert!(db.recalc_all_cases(0.20).unwrap().is_empty(), "nothing left to change");
+    }
+
+    #[test]
+    fn groups_come_in_pages_found_in_the_database_with_a_search() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        for i in 0..45 {
+            db.add_markup_group(&format!("GROUP {i:02}")).unwrap();
+        }
+        db.add_markup_group("MEATS").unwrap();
+        db.add_markup_group("100% PURE").unwrap();
+        let p1 = db.markup_groups(&page("", 20, 0)).unwrap();
+        assert_eq!((p1.rows.len(), p1.total), (20, 47));
+        assert_eq!(p1.rows[0].name, "100% PURE", "alphabetical");
+        let p3 = db.markup_groups(&page("", 20, 40)).unwrap();
+        assert_eq!((p3.rows.len(), p3.total), (7, 47));
+        assert!(db.markup_groups(&page("", 20, 60)).unwrap().rows.is_empty());
+        // search: case-insensitive, any part of the name, % is literal, total counts all matches
+        let found = db.markup_groups(&page("group 1", 5, 0)).unwrap();
+        assert_eq!((found.rows.len(), found.total), (5, 10));
+        assert_eq!(db.markup_groups(&page("meat", 20, 0)).unwrap().total, 1);
+        assert_eq!(db.markup_groups(&page("100%", 20, 0)).unwrap().total, 1);
+        assert_eq!(db.markup_groups(&page("%", 20, 0)).unwrap().total, 1);
+        assert_eq!(db.markup_groups(&page("nothing", 20, 0)).unwrap().total, 0);
+    }
+
+    #[test]
+    fn only_the_rows_on_the_page_are_counted_and_levels_page_too() {
+        let db = ProductsDb::open_in_memory().unwrap();
+        let a = db.add_markup_group("AAA").unwrap().id;
+        let b = db.add_markup_group("BBB").unwrap().id;
+        db.add(&write("1", "X", 100, 100, Some(b)), 0.10).unwrap();
+        db.add(&write("2", "Y", 100, 100, Some(b)), 0.10).unwrap();
+        let second = db.markup_groups(&page("", 1, 1)).unwrap();
+        assert_eq!((second.rows[0].id, second.rows[0].products, second.total), (b, 2, 2));
+        assert_eq!(db.markup_groups(&page("", 1, 0)).unwrap().rows[0].id, a);
+        for i in 1..=30 {
+            db.add_level(&input(&format!("Level {i:02}"), i, 5.0)).unwrap();
+        }
+        let l = db.level_rows(&page("", 25, 25)).unwrap();
+        assert_eq!((l.rows.len(), l.total), (5, 30));
+        assert_eq!(l.rows[0].level.min_qty, 26, "smallest minimum quantity first");
+        assert_eq!(db.level_rows(&page("level 3", 25, 0)).unwrap().total, 1);
+    }
+
+    #[test]
+    fn the_listing_stays_fast_with_many_groups_and_products() {
+        // 3,000 groups and 60,000 products: the first page must not depend on the table sizes.
+        let db = ProductsDb::open_in_memory().unwrap();
+        db.with_conn(|c| {
+            c.execute_batch(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3000)
+                 INSERT INTO groups (name, profit_margin) SELECT 'GROUP ' || printf('%05d', i), 0.25 FROM n;
+                 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 60000)
+                 INSERT INTO products (barcode, name, cost, selling_price, group_id)
+                 SELECT 'B' || i, 'ITEM ' || i, 1.0, 1.25, 1 + (i % 3000) FROM n;",
+            )
+        })
+        .unwrap();
+        let started = std::time::Instant::now();
+        let first = db.markup_groups(&page("", 20, 0)).unwrap();
+        let found = db.markup_groups(&page("0299", 20, 0)).unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!((first.rows.len(), first.total, first.rows[0].products), (20, 3000, 20));
+        assert_eq!(found.total, 11, "GROUP 00299 and GROUP 02990 to 02999");
+        eprintln!("two page loads over 3,000 groups and 60,000 products: {elapsed:?}");
+        assert!(elapsed.as_millis() < 500, "two page loads took {elapsed:?}");
     }
 }

@@ -33,6 +33,49 @@ component HeaderText inherits Text {
     vertical-alignment: center;
 }
 
+// Search box for a list (Enter or Search; Clear shows everything again).
+component SearchBar inherits HorizontalLayout {
+    in-out property <string> text;
+    in property <string> placeholder;
+    callback submitted();
+    callback cleared();
+    height: 44px;
+    padding-top: 4px;
+    spacing: 6px;
+    Field {
+        ui-scale: 0.85;
+        text <=> root.text;
+        placeholder: root.placeholder;
+        accepted => { root.submitted(); }
+    }
+    OutlineButton { width: 76px; height: 34px; text: "Search"; clicked => { root.submitted(); } }
+    OutlineButton { width: 64px; height: 34px; text: "Clear"; clicked => { root.cleared(); } }
+}
+
+// Prev / range / Next under a list, like the Products page.
+component PagerBar inherits HorizontalLayout {
+    in property <string> range;
+    in property <bool> can-prev;
+    in property <bool> can-next;
+    in property <bool> loading;
+    callback prev();
+    callback next();
+    height: 40px;
+    padding-top: 6px;
+    alignment: center;
+    spacing: 10px;
+    OutlineButton { width: 76px; height: 30px; text: "← Prev"; active: root.can-prev && !root.loading; clicked => { root.prev(); } }
+    Text {
+        text: root.loading ? "Loading…" : root.range;
+        min-width: 190px;
+        font-size: 11px;
+        color: Theme.muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    OutlineButton { width: 76px; height: 30px; text: "Next →"; active: root.can-next && !root.loading; clicked => { root.next(); } }
+}
+
 export component GroupsPage inherits Rectangle {
     in property <[MarkupRowData]> groups;
     in property <[LevelRowData]> levels;
@@ -41,10 +84,30 @@ export component GroupsPage inherits Rectangle {
     in-out property <string> new-level-name;
     in-out property <string> new-level-qty;
     in-out property <string> new-level-pct;
+    in-out property <string> group-search;
+    in property <string> group-range;
+    in property <bool> group-can-prev;
+    in property <bool> group-can-next;
+    in property <bool> group-loading;
+    in property <string> group-empty;
+    in-out property <string> level-search;
+    in property <string> level-range;
+    in property <bool> level-can-prev;
+    in property <bool> level-can-next;
+    in property <bool> level-loading;
+    in property <string> level-empty;
     in property <string> status-text;
     in property <bool> status-ok;
     in property <bool> dirty;
 
+    callback group-search-submitted();
+    callback group-search-cleared();
+    callback group-prev();
+    callback group-next();
+    callback level-search-submitted();
+    callback level-search-cleared();
+    callback level-prev();
+    callback level-next();
     callback group-markup-edited(int, string);
     callback delete-group(int);
     callback add-group();
@@ -82,6 +145,12 @@ export component GroupsPage inherits Rectangle {
 
                 VerticalLayout {
                     spacing: 4px;
+                    SearchBar {
+                        text <=> root.group-search;
+                        placeholder: "Search groups by name...";
+                        submitted => { root.group-search-submitted(); }
+                        cleared => { root.group-search-cleared(); }
+                    }
                     HorizontalLayout {
                         height: 22px;
                         padding-left: 8px;
@@ -123,11 +192,19 @@ export component GroupsPage inherits Rectangle {
                         }
                     }
                     if root.groups.length == 0 : Text {
-                        text: "No groups yet. Add one below, for example GENERAL at 25%.";
+                        text: root.group-empty;
                         font-size: 12px;
                         color: Theme.muted;
                         height: 34px;
                         vertical-alignment: center;
+                    }
+                    PagerBar {
+                        range: root.group-range;
+                        can-prev: root.group-can-prev;
+                        can-next: root.group-can-next;
+                        loading: root.group-loading;
+                        prev => { root.group-prev(); }
+                        next => { root.group-next(); }
                     }
                     HorizontalLayout {
                         height: 44px;
@@ -175,6 +252,12 @@ export component GroupsPage inherits Rectangle {
 
                 VerticalLayout {
                     spacing: 4px;
+                    SearchBar {
+                        text <=> root.level-search;
+                        placeholder: "Search levels by name...";
+                        submitted => { root.level-search-submitted(); }
+                        cleared => { root.level-search-cleared(); }
+                    }
                     HorizontalLayout {
                         height: 22px;
                         padding-left: 8px;
@@ -228,11 +311,19 @@ export component GroupsPage inherits Rectangle {
                         }
                     }
                     if root.levels.length == 0 : Text {
-                        text: "No levels yet. Add one below, for example Level 1: 3 or more, 5% off.";
+                        text: root.level-empty;
                         font-size: 12px;
                         color: Theme.muted;
                         height: 34px;
                         vertical-alignment: center;
+                    }
+                    PagerBar {
+                        range: root.level-range;
+                        can-prev: root.level-can-prev;
+                        can-next: root.level-can-next;
+                        loading: root.level-loading;
+                        prev => { root.level-prev(); }
+                        next => { root.level-next(); }
                     }
                     HorizontalLayout {
                         height: 44px;

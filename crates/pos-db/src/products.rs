@@ -105,6 +105,14 @@ fn migrate(conn: &Connection) -> Result<(), StorageError> {
             conn.execute(&format!("ALTER TABLE products ADD COLUMN {name} {ddl}"), []).map_err(storage)?;
         }
     }
+    // The Groups & Discounts page counts the products of each group and level it shows. Without
+    // these indexes every count scans the whole products table.
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_products_markup_group ON products(group_id);
+         CREATE INDEX IF NOT EXISTS idx_products_discount1    ON products(discount_level1_id);
+         CREATE INDEX IF NOT EXISTS idx_products_discount2    ON products(discount_level2_id);",
+    )
+    .map_err(storage)?;
     Ok(())
 }
 
@@ -114,7 +122,7 @@ fn fts_available(conn: &Connection) -> bool {
 
 /// `%text%` with LIKE wildcards in the text escaped, so a typed `%` or `_` matches itself
 /// (the FTS path is literal too, and the two paths must agree).
-fn like_literal(text: &str) -> String {
+pub(crate) fn like_literal(text: &str) -> String {
     format!("%{}%", text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))
 }
 

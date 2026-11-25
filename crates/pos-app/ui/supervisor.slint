@@ -272,6 +272,26 @@ export component SupervisorWindow inherits Window {
     in-out property <string> new-level-name;
     in-out property <string> new-level-qty;
     in-out property <string> new-level-pct;
+    in-out property <string> group-search;
+    in property <string> group-range;
+    in property <bool> group-can-prev;
+    in property <bool> group-can-next;
+    in property <bool> group-loading;
+    in property <string> group-empty;
+    in-out property <string> level-search;
+    in property <string> level-range;
+    in property <bool> level-can-prev;
+    in property <bool> level-can-next;
+    in property <bool> level-loading;
+    in property <string> level-empty;
+    callback group-search-submitted();
+    callback group-search-cleared();
+    callback group-prev();
+    callback group-next();
+    callback level-search-submitted();
+    callback level-search-cleared();
+    callback level-prev();
+    callback level-next();
     in property <string> groups-status;
     in property <bool> groups-status-ok;
     in property <bool> groups-dirty;
@@ -474,6 +494,26 @@ export component SupervisorWindow inherits Window {
                 new-level-name <=> root.new-level-name;
                 new-level-qty <=> root.new-level-qty;
                 new-level-pct <=> root.new-level-pct;
+                group-search <=> root.group-search;
+                group-range: root.group-range;
+                group-can-prev: root.group-can-prev;
+                group-can-next: root.group-can-next;
+                group-loading: root.group-loading;
+                group-empty: root.group-empty;
+                level-search <=> root.level-search;
+                level-range: root.level-range;
+                level-can-prev: root.level-can-prev;
+                level-can-next: root.level-can-next;
+                level-loading: root.level-loading;
+                level-empty: root.level-empty;
+                group-search-submitted => { root.group-search-submitted(); }
+                group-search-cleared => { root.group-search-cleared(); }
+                group-prev => { root.group-prev(); }
+                group-next => { root.group-next(); }
+                level-search-submitted => { root.level-search-submitted(); }
+                level-search-cleared => { root.level-search-cleared(); }
+                level-prev => { root.level-prev(); }
+                level-next => { root.level-next(); }
                 status-text: root.groups-status;
                 status-ok: root.groups-status-ok;
                 dirty: root.groups-dirty;

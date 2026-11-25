@@ -112,8 +112,25 @@ pub fn clean_group_name(name: &str) -> Result<String, ProductError> {
     Ok(n)
 }
 
+/// One page of a list, found in the database (not by loading everything and slicing).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListQuery {
+    /// Part of the name, any case; empty = everything.
+    pub search: String,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListPage<T> {
+    pub rows: Vec<T>,
+    /// All rows that match the search, not just this page.
+    pub total: u64,
+}
+
 pub trait CatalogRepository: Send + Sync {
-    fn markup_groups(&self) -> Result<Vec<MarkupGroupRow>, StorageError>;
+    /// Markup groups by name, one page at a time.
+    fn markup_groups(&self, query: &ListQuery) -> Result<ListPage<MarkupGroupRow>, StorageError>;
     /// Adds a group with a 0 % markup. The name is upper-cased; a name that exists is refused.
     fn add_markup_group(&self, name: &str) -> Result<MarkupGroupRow, ProductError>;
     /// Products in the group keep their prices and just lose the group.
@@ -124,7 +141,8 @@ pub trait CatalogRepository: Send + Sync {
     /// then the cases that follow a repriced single, in one transaction.
     fn save_markups(&self, changes: &[MarkupChange], case_profit_pct: f64) -> Result<MarkupOutcome, StorageError>;
 
-    fn level_rows(&self) -> Result<Vec<LevelRow>, StorageError>;
+    /// Discount levels, smallest minimum quantity first, one page at a time.
+    fn level_rows(&self, query: &ListQuery) -> Result<ListPage<LevelRow>, StorageError>;
     fn add_level(&self, input: &LevelInput) -> Result<LevelRow, ProductError>;
     fn update_level(&self, id: i64, input: &LevelInput) -> Result<(), ProductError>;
     /// Products and groups that used the level lose that discount.
@@ -136,8 +154,8 @@ pub trait CatalogRepository: Send + Sync {
 }
 
 impl<T: CatalogRepository + ?Sized> CatalogRepository for std::sync::Arc<T> {
-    fn markup_groups(&self) -> Result<Vec<MarkupGroupRow>, StorageError> {
-        (**self).markup_groups()
+    fn markup_groups(&self, q: &ListQuery) -> Result<ListPage<MarkupGroupRow>, StorageError> {
+        (**self).markup_groups(q)
     }
     fn add_markup_group(&self, name: &str) -> Result<MarkupGroupRow, ProductError> {
         (**self).add_markup_group(name)
@@ -151,8 +169,8 @@ impl<T: CatalogRepository + ?Sized> CatalogRepository for std::sync::Arc<T> {
     fn save_markups(&self, c: &[MarkupChange], pct: f64) -> Result<MarkupOutcome, StorageError> {
         (**self).save_markups(c, pct)
     }
-    fn level_rows(&self) -> Result<Vec<LevelRow>, StorageError> {
-        (**self).level_rows()
+    fn level_rows(&self, q: &ListQuery) -> Result<ListPage<LevelRow>, StorageError> {
+        (**self).level_rows(q)
     }
     fn add_level(&self, i: &LevelInput) -> Result<LevelRow, ProductError> {
         (**self).add_level(i)
