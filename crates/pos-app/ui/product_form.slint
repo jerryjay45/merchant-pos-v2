@@ -90,7 +90,7 @@ component DiscountSlotEditor inherits VerticalLayout {
             width: 118px;
             ui-scale: 0.85;
             text <=> root.from;
-            placeholder: "from (optional)";
+            placeholder: "YYYY-MM-DD";
             active: root.active;
             edited(t) => { root.changed(); }
         }
@@ -99,10 +99,17 @@ component DiscountSlotEditor inherits VerticalLayout {
             width: 118px;
             ui-scale: 0.85;
             text <=> root.to;
-            placeholder: "until (optional)";
+            placeholder: "YYYY-MM-DD";
             active: root.active;
             edited(t) => { root.changed(); }
         }
+    }
+    // The placeholders above disappear as soon as you type, so the format is also said here.
+    if root.index != 0 : Text {
+        text: "Dates are year-month-day, like 2026-12-24. Leave both empty for no time limit.";
+        font-size: 11px;
+        color: Theme.muted;
+        wrap: word-wrap;
     }
 }
 
