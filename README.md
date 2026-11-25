@@ -85,6 +85,12 @@ list is one table in `pos-core/src/nav.rs`, the same keys, order and roles as th
 registry. Access is fixed by role; there are no per-user switches. Pages that are not ported yet show a
 note instead of a blank screen.
 
+The window opens maximized, so it fills the screen on 4:3, 5:4 and 16:9 displays alike; un-maximized it is
+1280x800, and the smallest size it allows is 960x600 (long product names are shortened with "..." there, and
+the product dialog scrolls). It uses the zoom saved by the login screen's zoom buttons (`ui_scale_pct`, 70 to
+150%), so change the zoom on the login screen. It has been rendered at 1024x768, 1280x720, 1280x1024,
+1366x768, 1600x900 and 1920x1080.
+
 **Inventory > Products.**
 
 - **Search and paging:** 50 products per page. A slower, older search can never overwrite a newer one.

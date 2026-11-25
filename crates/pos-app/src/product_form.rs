@@ -70,6 +70,8 @@ struct Env {
     form: Rc<RefCell<Form>>,
     /// Reloads the product list.
     reload: Rc<dyn Fn()>,
+    /// The action of a Yes/No box some other page opened (Groups & Discounts).
+    slot: crate::groups::ConfirmSlot,
 }
 
 fn cost_text(cents: i64) -> String {
@@ -857,7 +859,7 @@ impl Env {
 }
 
 /// Connects the dialog and the row actions of the Products page to storage.
-pub fn wire(win: &SupervisorWindow, ctx: Arc<Ctx>, reload: Rc<dyn Fn()>) {
+pub fn wire(win: &SupervisorWindow, ctx: Arc<Ctx>, reload: Rc<dyn Fn()>, slot: crate::groups::ConfirmSlot) {
     let env = Env {
         weak: win.as_weak(),
         ctx,
@@ -875,6 +877,7 @@ pub fn wire(win: &SupervisorWindow, ctx: Arc<Ctx>, reload: Rc<dyn Fn()>) {
             symbol: "$".into(),
         })),
         reload,
+        slot,
     };
 
     let e = env.clone();
@@ -957,13 +960,21 @@ pub fn wire(win: &SupervisorWindow, ctx: Arc<Ctx>, reload: Rc<dyn Fn()>) {
                 }
             },
             Pending::BarcodeChange => e.save(w, true),
-            Pending::Notice | Pending::None => {}
+            Pending::Notice => {}
+            // not one of this dialog's questions: another page's Yes/No box
+            Pending::None => {
+                let action = e.slot.borrow_mut().take();
+                if let Some(action) = action {
+                    action(w);
+                }
+            }
         })
     });
     let e = env;
     win.on_cancelled(move || {
         e.with(|e, w| {
             e.close_confirm(w);
+            e.slot.borrow_mut().take();
         })
     });
 }

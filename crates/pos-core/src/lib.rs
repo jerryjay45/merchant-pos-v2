@@ -3,6 +3,7 @@
 
 pub mod auth;
 pub mod case_pricing;
+pub mod catalog;
 pub mod discount;
 pub mod money;
 pub mod nav;
@@ -27,3 +28,7 @@ pub use discount::{
     apply_discount, fmt_percent, parse_date, AppliedDiscount, DiscountLevel, DiscountSetting, Rule, SlotSetting, SlotSource,
 };
 pub use case_pricing::{follows_unit, price_case, savings_cents, CaseLink, CaseSetting, PriceMode, Unit};
+pub use catalog::{
+    clean_group_name, markup_text, parse_level, parse_markup_percent, CatalogRepository, LevelInput, LevelRow, ListPage, ListQuery, MarkupChange,
+    MarkupGroupRow, MarkupOutcome,
+};

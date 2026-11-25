@@ -8,9 +8,9 @@ use pos_core::{
     areas_for, format_money, nav, ConfigRepository, Pager, ProductQuery, ProductRepository, ProductRow, Role, User,
 };
 use pos_db::{ConfigDb, ProductsDb};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{platform::WindowEvent, ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::{product_form, NavItem, ProductRowData, SupervisorWindow};
+use crate::{groups, product_form, NavItem, ProductRowData, SupervisorWindow};
 
 const PAGE_SIZE: u32 = 50; // same as the Python list
 
@@ -104,15 +104,40 @@ fn load(win: &SupervisorWindow, ctx: &Arc<Ctx>, state: &Shared) {
     });
 }
 
-fn show_page(win: &SupervisorWindow, key: &str, title: &str, ctx: &Arc<Ctx>, state: &Shared, first_time: &mut bool) {
+fn show_page(win: &SupervisorWindow, key: &str, title: &str, ctx: &Arc<Ctx>, state: &Shared, first_time: &mut bool, groups: &groups::Page) {
     win.set_current_page(key.into());
     win.set_page_title(title.into());
     let built = nav::is_built(key);
     win.set_page_built(built);
+    if key == "groups" && built {
+        groups.load(win); // the page always shows what is stored now
+    }
     if key == "products" && built && *first_time {
         *first_time = false; // pages load the first time they are opened, like the Python tabs
         load(win, ctx, state);
     }
+}
+
+/// Shows the window the way a till wants it: maximized, at the zoom saved with the login
+/// screen's zoom buttons (`ui_scale_pct`, 70 to 150, default 100).
+///
+/// The zoom multiplies the window's scale factor, so text, buttons and spacing all grow together.
+pub fn present(win: &SupervisorWindow, ctx: &Ctx) -> Result<(), slint::PlatformError> {
+    win.show()?;
+    // Maximizing is a request to the window manager, so it only works once the window is on screen;
+    // asked for straight after show() it is ignored. Ask again a moment later, from the event loop.
+    let weak = win.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
+        if let Some(w) = weak.upgrade() {
+            w.window().set_maximized(true);
+        }
+    });
+    let pct = ctx.config.get_int("ui_scale_pct", 100).unwrap_or(100).clamp(70, 150);
+    if pct != 100 {
+        let base = win.window().scale_factor();
+        win.window().dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: base * pct as f32 / 100.0 });
+    }
+    Ok(())
 }
 
 /// Builds the window for a signed-in supervisor or manager. `on_logout` runs when Logout is pressed.
@@ -138,10 +163,13 @@ pub fn open(user: &User, ctx: Arc<Ctx>, on_logout: impl Fn() + 'static) -> Resul
 
     let areas = Arc::new(areas);
     let first_load = std::rc::Rc::new(std::cell::Cell::new(true));
+    // The Yes/No box is shared: the product dialog and the Groups & Discounts page both use it.
+    let confirm_slot: groups::ConfirmSlot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let groups_page = groups::wire(&win, ctx.clone(), confirm_slot.clone());
 
     // Open the first area / first page.
     let select_area = {
-        let (weak, areas, ctx, state, first_load) = (win.as_weak(), areas.clone(), ctx.clone(), state.clone(), first_load.clone());
+        let (weak, areas, ctx, state, first_load, groups_page) = (win.as_weak(), areas.clone(), ctx.clone(), state.clone(), first_load.clone(), groups_page.clone());
         move |key: &str, page_key: Option<&str>| {
             let Some(win) = weak.upgrade() else { return };
             let Some(area) = areas.iter().find(|a| a.key == key) else { return };
@@ -152,7 +180,7 @@ pub fn open(user: &User, ctx: Arc<Ctx>, on_logout: impl Fn() + 'static) -> Resul
                 .or_else(|| area.pages.first());
             if let Some(p) = page {
                 let mut first = first_load.get();
-                show_page(&win, p.key, p.title, &ctx, &state, &mut first);
+                show_page(&win, p.key, p.title, &ctx, &state, &mut first, &groups_page);
                 first_load.set(first);
             }
         }
@@ -169,13 +197,13 @@ pub fn open(user: &User, ctx: Arc<Ctx>, on_logout: impl Fn() + 'static) -> Resul
     let sa = select_area.clone();
     win.on_area_selected(move |k| sa(k.as_str(), None));
 
-    let (weak, areas2, ctx2, state2, first2) = (win.as_weak(), areas.clone(), ctx.clone(), state.clone(), first_load.clone());
+    let (weak, areas2, ctx2, state2, first2, groups2) = (win.as_weak(), areas.clone(), ctx.clone(), state.clone(), first_load.clone(), groups_page.clone());
     win.on_page_selected(move |k| {
         let Some(win) = weak.upgrade() else { return };
         let area_key = win.get_current_area();
         let Some(p) = areas2.iter().find(|a| a.key == area_key.as_str()).and_then(|a| a.pages.iter().find(|p| p.key == k.as_str())) else { return };
         let mut first = first2.get();
-        show_page(&win, p.key, p.title, &ctx2, &state2, &mut first);
+        show_page(&win, p.key, p.title, &ctx2, &state2, &mut first, &groups2);
         first2.set(first);
     });
 
@@ -229,7 +257,7 @@ pub fn open(user: &User, ctx: Arc<Ctx>, on_logout: impl Fn() + 'static) -> Resul
             }
         })
     };
-    product_form::wire(&win, ctx, reload);
+    product_form::wire(&win, ctx, reload, confirm_slot);
 
     win.on_logout(on_logout);
     Ok(win)

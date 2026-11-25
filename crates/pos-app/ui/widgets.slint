@@ -309,3 +309,24 @@ export component Select inherits Rectangle {
         }
     }
 }
+
+export component SmallButton inherits Rectangle {
+    in property <string> text;
+    in property <color> tone;
+    in property <color> hover-bg;
+    callback clicked();
+    height: 26px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: root.tone;
+    background: touch.has-hover ? root.hover-bg : transparent;
+    Text {
+        text: root.text;
+        font-size: 12px;
+        font-weight: 600;
+        color: root.tone;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}

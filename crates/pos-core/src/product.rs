@@ -184,12 +184,17 @@ impl Pager {
 
     /// `101-150 of 2,030 products`, `1 product`, or `No products`.
     pub fn range_label(&self, shown: usize) -> String {
+        self.range_label_of(shown, "product", "products")
+    }
+
+    /// The same label for any kind of row: `1-20 of 140 groups`, `1 group`, `No groups`.
+    pub fn range_label_of(&self, shown: usize, one: &str, many: &str) -> String {
         match (self.total, shown) {
-            (0, _) | (_, 0) => "No products".to_string(),
-            (1, _) => "1 product".to_string(),
+            (0, _) | (_, 0) => format!("No {many}"),
+            (1, _) => format!("1 {one}"),
             (total, n) => {
                 let first = self.offset() as u64 + 1;
-                format!("{}-{} of {} products", group(first), group(first + n as u64 - 1), group(total))
+                format!("{}-{} of {} {many}", group(first), group(first + n as u64 - 1), group(total))
             }
         }
     }

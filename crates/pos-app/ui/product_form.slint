@@ -90,7 +90,7 @@ component DiscountSlotEditor inherits VerticalLayout {
             width: 118px;
             ui-scale: 0.85;
             text <=> root.from;
-            placeholder: "from (optional)";
+            placeholder: "YYYY-MM-DD";
             active: root.active;
             edited(t) => { root.changed(); }
         }
@@ -99,10 +99,17 @@ component DiscountSlotEditor inherits VerticalLayout {
             width: 118px;
             ui-scale: 0.85;
             text <=> root.to;
-            placeholder: "until (optional)";
+            placeholder: "YYYY-MM-DD";
             active: root.active;
             edited(t) => { root.changed(); }
         }
+    }
+    // The placeholders above disappear as soon as you type, so the format is also said here.
+    if root.index != 0 : Text {
+        text: "Dates are year-month-day, like 2026-12-24. Leave both empty for no time limit.";
+        font-size: 11px;
+        color: Theme.muted;
+        wrap: word-wrap;
     }
 }
 
@@ -507,15 +514,25 @@ export component ProductForm inherits Rectangle {
                 x: 0px;
                 y: parent.height - self.preferred-height;
                 width: parent.width;
+                height: self.preferred-height;
+                alignment: start;
                 padding: 20px;
                 padding-top: 8px;
                 spacing: 8px;
-                if root.error-text != "" : Text {
-                    text: root.error-text;
-                    color: Theme.red;
-                    font-size: 12px;
-                    font-weight: 600;
-                    wrap: word-wrap;
+                // The message sits in a box that is exactly as tall as its text, so a long message
+                // can never squeeze the buttons out of the card (the buttons always stay visible).
+                if root.error-text != "" : Rectangle {
+                    height: error-label.preferred-height + 4px;
+                    error-label := Text {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        text: root.error-text;
+                        color: Theme.red;
+                        font-size: 12px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
                 }
 
                 Rectangle { height: 2px; }

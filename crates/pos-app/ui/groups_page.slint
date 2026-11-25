@@ -1,0 +1,372 @@
+// Inventory > Groups & Discounts (Python: Manager > Groups & Discounts): markup groups, the shop
+// profit for cases, and the shared discount levels. Rows are edited in place; Save writes them.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { AmberButton, OutlineButton, Field, FieldLabel, SmallButton } from "widgets.slint";
+
+export struct MarkupRowData { name: string, markup: string, products: string }
+export struct LevelRowData { name: string, qty: string, pct: string, used: string }
+
+component Card inherits Rectangle {
+    in property <string> title;
+    in property <string> hint;
+    background: white;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.border-light;
+    height: inner.preferred-height;
+    inner := VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        Text { text: root.title; font-size: 14px; font-weight: 800; color: Theme.text; }
+        Text { text: root.hint; font-size: 11px; color: Theme.muted; wrap: word-wrap; }
+        Rectangle { height: 1px; background: Theme.border-light; }
+        @children
+    }
+}
+
+component HeaderText inherits Text {
+    font-size: 10px;
+    font-weight: 700;
+    color: Theme.label;
+    vertical-alignment: center;
+}
+
+// Search box for a list (Enter or Search; Clear shows everything again).
+component SearchBar inherits HorizontalLayout {
+    in-out property <string> text;
+    in property <string> placeholder;
+    callback submitted();
+    callback cleared();
+    height: 44px;
+    padding-top: 4px;
+    spacing: 6px;
+    Field {
+        ui-scale: 0.85;
+        text <=> root.text;
+        placeholder: root.placeholder;
+        accepted => { root.submitted(); }
+    }
+    OutlineButton { width: 76px; height: 34px; text: "Search"; clicked => { root.submitted(); } }
+    OutlineButton { width: 64px; height: 34px; text: "Clear"; clicked => { root.cleared(); } }
+}
+
+// Prev / range / Next under a list, like the Products page.
+component PagerBar inherits HorizontalLayout {
+    in property <string> range;
+    in property <bool> can-prev;
+    in property <bool> can-next;
+    in property <bool> loading;
+    callback prev();
+    callback next();
+    height: 40px;
+    padding-top: 6px;
+    alignment: center;
+    spacing: 10px;
+    OutlineButton { width: 76px; height: 30px; text: "← Prev"; active: root.can-prev && !root.loading; clicked => { root.prev(); } }
+    Text {
+        text: root.loading ? "Loading…" : root.range;
+        min-width: 190px;
+        font-size: 11px;
+        color: Theme.muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    OutlineButton { width: 76px; height: 30px; text: "Next →"; active: root.can-next && !root.loading; clicked => { root.next(); } }
+}
+
+export component GroupsPage inherits Rectangle {
+    in property <[MarkupRowData]> groups;
+    in property <[LevelRowData]> levels;
+    in-out property <string> new-group-name;
+    in-out property <string> case-pct;
+    in-out property <string> new-level-name;
+    in-out property <string> new-level-qty;
+    in-out property <string> new-level-pct;
+    in-out property <string> group-search;
+    in property <string> group-range;
+    in property <bool> group-can-prev;
+    in property <bool> group-can-next;
+    in property <bool> group-loading;
+    in property <string> group-empty;
+    in-out property <string> level-search;
+    in property <string> level-range;
+    in property <bool> level-can-prev;
+    in property <bool> level-can-next;
+    in property <bool> level-loading;
+    in property <string> level-empty;
+    in property <string> status-text;
+    in property <bool> status-ok;
+    in property <bool> dirty;
+
+    callback group-search-submitted();
+    callback group-search-cleared();
+    callback group-prev();
+    callback group-next();
+    callback level-search-submitted();
+    callback level-search-cleared();
+    callback level-prev();
+    callback level-next();
+    callback group-markup-edited(int, string);
+    callback delete-group(int);
+    callback add-group();
+    callback case-pct-edited();
+    callback recalc-cases();
+    /// field: 0 = name, 1 = minimum quantity, 2 = percent
+    callback level-edited(int, int, string);
+    callback delete-level(int);
+    callback add-level();
+    callback save();
+
+    background: Theme.warm-white;
+
+    ScrollView {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height - 64px;
+        content-height: body.preferred-height + 24px;
+
+        body := VerticalLayout {
+            y: 0px;
+            width: parent.width;
+            padding-left: max(20px, (parent.width - 880px) / 2);
+            padding-right: max(20px, (parent.width - 880px) / 2);
+            padding-top: 16px;
+            padding-bottom: 8px;
+            spacing: 14px;
+            alignment: start;
+
+            // ── product groups ──
+            Card {
+                title: "Product groups  ·  markup";
+                hint: "Selling price = cost + markup. A 25% markup on a $100 cost sells at $125. Products choose their group in the product dialog, and saving a new markup reprices the products in that group.";
+
+                VerticalLayout {
+                    spacing: 4px;
+                    SearchBar {
+                        text <=> root.group-search;
+                        placeholder: "Search groups by name...";
+                        submitted => { root.group-search-submitted(); }
+                        cleared => { root.group-search-cleared(); }
+                    }
+                    HorizontalLayout {
+                        height: 22px;
+                        padding-left: 8px;
+                        spacing: 10px;
+                        HeaderText { text: "GROUP"; horizontal-stretch: 1; }
+                        HeaderText { text: "MARKUP"; width: 124px; }
+                        HeaderText { text: "USED BY"; width: 90px; }
+                        Rectangle { width: 64px; }
+                    }
+                    for g[i] in root.groups : Rectangle {
+                        height: 40px;
+                        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border-light; }
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 2px;
+                            spacing: 10px;
+                            Text { text: g.name; font-size: 13px; font-weight: 600; color: Theme.text; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                            Field {
+                                width: 100px;
+                                ui-scale: 0.85;
+                                y: (parent.height - self.height) / 2;
+                                text: g.markup;
+                                placeholder: "25";
+                                edited(t) => { root.group-markup-edited(i, t); }
+                            }
+                            Text { text: "%"; width: 14px; font-size: 12px; color: Theme.label; vertical-alignment: center; }
+                            Text { text: g.products; width: 90px; font-size: 11px; color: Theme.muted; vertical-alignment: center; }
+                            Rectangle {
+                                width: 64px;
+                                SmallButton {
+                                    width: 58px;
+                                    y: (parent.height - self.height) / 2;
+                                    text: "Delete";
+                                    tone: Theme.red;
+                                    hover-bg: Theme.red-light;
+                                    clicked => { root.delete-group(i); }
+                                }
+                            }
+                        }
+                    }
+                    if root.groups.length == 0 : Text {
+                        text: root.group-empty;
+                        font-size: 12px;
+                        color: Theme.muted;
+                        height: 34px;
+                        vertical-alignment: center;
+                    }
+                    PagerBar {
+                        range: root.group-range;
+                        can-prev: root.group-can-prev;
+                        can-next: root.group-can-next;
+                        loading: root.group-loading;
+                        prev => { root.group-prev(); }
+                        next => { root.group-next(); }
+                    }
+                    HorizontalLayout {
+                        height: 44px;
+                        padding-top: 6px;
+                        spacing: 8px;
+                        Field {
+                            ui-scale: 0.85;
+                            text <=> root.new-group-name;
+                            placeholder: "New group name, e.g. MEATS";
+                            force-upper: true;
+                            accepted => { root.add-group(); }
+                        }
+                        AmberButton { width: 130px; height: 34px; text: "+  Add group"; clicked => { root.add-group(); } }
+                    }
+                }
+            }
+
+            // ── cases ──
+            Card {
+                title: "Case pricing";
+                hint: "The shop profit added to the cost of cases that are priced as cost + profit. Cases with a pack discount or a typed price keep their own rules; their cost still follows the single product.";
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 44px;
+                    alignment: start;
+                    Text { text: "Profit on cases"; font-size: 12px; color: Theme.label; vertical-alignment: center; }
+                    Field {
+                        width: 100px;
+                        ui-scale: 0.85;
+                        text <=> root.case-pct;
+                        placeholder: "10";
+                        edited(t) => { root.case-pct-edited(); }
+                    }
+                    Text { text: "%"; font-size: 12px; color: Theme.label; vertical-alignment: center; }
+                    Rectangle { width: 10px; }
+                    OutlineButton { width: 230px; height: 34px; text: "↻  Save this and recalculate all cases"; clicked => { root.recalc-cases(); } }
+                }
+            }
+
+            // ── discount levels ──
+            Card {
+                title: "Discount levels";
+                hint: "Shared discounts you pick in the product dialog, for example 5% off when buying 3 or more. Changing a level changes every product that uses it.";
+
+                VerticalLayout {
+                    spacing: 4px;
+                    SearchBar {
+                        text <=> root.level-search;
+                        placeholder: "Search levels by name...";
+                        submitted => { root.level-search-submitted(); }
+                        cleared => { root.level-search-cleared(); }
+                    }
+                    HorizontalLayout {
+                        height: 22px;
+                        padding-left: 8px;
+                        spacing: 10px;
+                        HeaderText { text: "NAME"; horizontal-stretch: 1; }
+                        HeaderText { text: "MIN QTY"; width: 84px; }
+                        HeaderText { text: "% OFF"; width: 84px; }
+                        HeaderText { text: "USED BY"; width: 90px; }
+                        Rectangle { width: 64px; }
+                    }
+                    for l[i] in root.levels : Rectangle {
+                        height: 40px;
+                        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border-light; }
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 2px;
+                            spacing: 10px;
+                            Field {
+                                horizontal-stretch: 1;
+                                ui-scale: 0.85;
+                                y: (parent.height - self.height) / 2;
+                                text: l.name;
+                                edited(t) => { root.level-edited(i, 0, t); }
+                            }
+                            Field {
+                                width: 84px;
+                                ui-scale: 0.85;
+                                y: (parent.height - self.height) / 2;
+                                text: l.qty;
+                                edited(t) => { root.level-edited(i, 1, t); }
+                            }
+                            Field {
+                                width: 84px;
+                                ui-scale: 0.85;
+                                y: (parent.height - self.height) / 2;
+                                text: l.pct;
+                                edited(t) => { root.level-edited(i, 2, t); }
+                            }
+                            Text { text: l.used; width: 90px; font-size: 11px; color: Theme.muted; vertical-alignment: center; }
+                            Rectangle {
+                                width: 64px;
+                                SmallButton {
+                                    width: 58px;
+                                    y: (parent.height - self.height) / 2;
+                                    text: "Delete";
+                                    tone: Theme.red;
+                                    hover-bg: Theme.red-light;
+                                    clicked => { root.delete-level(i); }
+                                }
+                            }
+                        }
+                    }
+                    if root.levels.length == 0 : Text {
+                        text: root.level-empty;
+                        font-size: 12px;
+                        color: Theme.muted;
+                        height: 34px;
+                        vertical-alignment: center;
+                    }
+                    PagerBar {
+                        range: root.level-range;
+                        can-prev: root.level-can-prev;
+                        can-next: root.level-can-next;
+                        loading: root.level-loading;
+                        prev => { root.level-prev(); }
+                        next => { root.level-next(); }
+                    }
+                    HorizontalLayout {
+                        height: 44px;
+                        padding-top: 6px;
+                        padding-left: 8px;
+                        spacing: 10px;
+                        Field {
+                            horizontal-stretch: 1;
+                            ui-scale: 0.85;
+                            text <=> root.new-level-name;
+                            placeholder: "New level name, e.g. Level 1";
+                        }
+                        Field { width: 84px; ui-scale: 0.85; text <=> root.new-level-qty; placeholder: "3"; }
+                        Field { width: 84px; ui-scale: 0.85; text <=> root.new-level-pct; placeholder: "5"; accepted => { root.add-level(); } }
+                        Rectangle { width: 90px; }
+                        AmberButton { width: 64px; height: 34px; text: "Add"; clicked => { root.add-level(); } }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── save bar ──
+    Rectangle {
+        y: parent.height - 64px;
+        height: 64px;
+        background: white;
+        Rectangle { y: 0px; height: 1px; background: Theme.border; }
+        HorizontalLayout {
+            padding: 12px;
+            padding-left: max(20px, (parent.width - 880px) / 2);
+            padding-right: max(20px, (parent.width - 880px) / 2);
+            spacing: 12px;
+            Text {
+                text: root.status-text != "" ? root.status-text : root.dirty ? "You have unsaved changes." : "";
+                color: root.status-text == "" ? Theme.muted : root.status-ok ? Theme.green : Theme.red;
+                font-size: 12px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            AmberButton { width: 170px; height: 40px; text: "Save changes"; clicked => { root.save(); } }
+        }
+    }
+}
