@@ -1,0 +1,460 @@
+// Inventory > Stock (Python: supervisor stock tab): what is left, adjust it, see the history.
+// The product list and the variant-group pools are both paged and searched in the database.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { AmberButton, OutlineButton, Field, FieldLabel, SmallButton, Select, SearchBar, PagerBar } from "widgets.slint";
+
+export struct StockRowData { id: int, name: string, group: string, stock: string, level: int, note: string }
+export struct PoolRowData { id: int, name: string, stock: string, level: int }
+export struct HistoryRowData { change: string, up: bool, reason: string, by: string, at: string }
+
+component LevelText inherits Text {
+    in property <int> level;
+    font-size: 13px;
+    font-weight: level == 0 ? 500 : 700;
+    color: level == 2 ? Theme.red : level == 1 ? #955E12 : Theme.text;
+    horizontal-alignment: right;
+    vertical-alignment: center;
+}
+
+component HeaderText inherits Text {
+    font-size: 10px;
+    font-weight: 700;
+    color: Theme.label;
+    vertical-alignment: center;
+}
+
+export component StockPage inherits Rectangle {
+    in property <string> alert;
+    in property <[StockRowData]> rows;
+    in-out property <string> search;
+    in-out property <int> filter-index;
+    in property <string> range;
+    in property <bool> can-prev;
+    in property <bool> can-next;
+    in property <bool> loading;
+    in property <string> empty;
+
+    in property <[PoolRowData]> pool-rows;
+    in-out property <string> pool-search;
+    in property <string> pool-range;
+    in property <bool> pool-can-prev;
+    in property <bool> pool-can-next;
+    in property <bool> pool-loading;
+    in property <string> pool-empty;
+
+    callback search-submitted();
+    callback search-cleared();
+    callback refresh();
+    callback filter-changed();
+    callback prev();
+    callback next();
+    callback adjust(int);
+    callback history(int);
+    callback pool-search-submitted();
+    callback pool-search-cleared();
+    callback pool-prev();
+    callback pool-next();
+    callback pool-adjust(int);
+    callback pool-history(int);
+
+    background: Theme.warm-white;
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
+
+        if root.alert != "" : Rectangle {
+            background: #FFF4DE;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.accent;
+            height: alert-text.preferred-height + 20px;
+            alert-text := Text {
+                x: 14px;
+                y: 10px;
+                width: parent.width - 28px;
+                text: root.alert;
+                color: #6B4309;
+                font-size: 12px;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 10px;
+            vertical-stretch: 1;
+
+            // ── products ──
+            Rectangle {
+                horizontal-stretch: 1;
+                background: white;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: Theme.border;
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        height: 44px;
+                        padding-top: 4px;
+                        Field {
+                            ui-scale: 0.85;
+                            text <=> root.search;
+                            placeholder: "Search by name, barcode or group...";
+                            accepted => { root.search-submitted(); }
+                        }
+                        Select {
+                            width: 150px;
+                            y: 0px;
+                            height: 34px;
+                            options: ["All stock", "Low stock", "Out of stock"];
+                            index <=> root.filter-index;
+                            selected(i) => { root.filter-changed(); }
+                        }
+                        OutlineButton { width: 76px; height: 34px; text: "Search"; clicked => { root.search-submitted(); } }
+                        OutlineButton { width: 64px; height: 34px; text: "Clear"; clicked => { root.search-cleared(); } }
+                        OutlineButton { width: 40px; height: 34px; text: "↻"; clicked => { root.refresh(); } }
+                    }
+                    Rectangle {
+                        height: 28px;
+                        background: Theme.warm-white;
+                        border-radius: 6px;
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 8px;
+                            HeaderText { text: "PRODUCT"; horizontal-stretch: 1; }
+                            HeaderText { text: "GROUP"; width: 120px; }
+                            HeaderText { text: "STOCK"; width: 70px; horizontal-alignment: right; }
+                            HeaderText { text: "ACTIONS"; width: 130px; horizontal-alignment: center; }
+                        }
+                    }
+                    ListView {
+                        vertical-stretch: 1;
+                        for r in root.rows : Rectangle {
+                            height: 36px;
+                            background: touch.has-hover ? #FFF8EA : transparent;
+                            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border-light; }
+                            // first child = underneath, so the buttons above it get their clicks
+                            touch := TouchArea { double-clicked => { root.adjust(r.id); } }
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 8px;
+                                    Text { text: r.name; font-size: 13px; color: Theme.text; vertical-alignment: center; overflow: elide; }
+                                    Text { text: r.note; font-size: 10px; color: Theme.muted; vertical-alignment: center; }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                                Text { text: r.group; width: 120px; font-size: 12px; color: Theme.muted; vertical-alignment: center; overflow: elide; }
+                                LevelText { width: 70px; text: r.stock; level: r.level; }
+                                Rectangle {
+                                    width: 130px;
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        spacing: 6px;
+                                        SmallButton {
+                                            width: 58px;
+                                            y: (parent.height - self.height) / 2;
+                                            text: "Adjust";
+                                            tone: #955E12;
+                                            hover-bg: #FFF4DE;
+                                            clicked => { root.adjust(r.id); }
+                                        }
+                                        SmallButton {
+                                            width: 62px;
+                                            y: (parent.height - self.height) / 2;
+                                            text: "History";
+                                            tone: Theme.label;
+                                            hover-bg: Theme.warm-white;
+                                            clicked => { root.history(r.id); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if root.rows.length == 0 : Text {
+                        text: root.empty;
+                        color: Theme.muted;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        height: 40px;
+                        vertical-alignment: center;
+                    }
+                    PagerBar {
+                        range: root.range;
+                        can-prev: root.can-prev;
+                        can-next: root.can-next;
+                        loading: root.loading;
+                        prev => { root.prev(); }
+                        next => { root.next(); }
+                    }
+                }
+            }
+
+            // ── variant groups: shared stock ──
+            Rectangle {
+                width: 350px;
+                background: white;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: Theme.border;
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 6px;
+                    Text { text: "Variant groups  ·  shared stock"; font-size: 13px; font-weight: 800; color: Theme.text; }
+                    Text {
+                        text: "Flavours and scents share one pool: selling or adjusting any of them moves it.";
+                        font-size: 10px;
+                        color: Theme.muted;
+                        wrap: word-wrap;
+                    }
+                    SearchBar {
+                        text <=> root.pool-search;
+                        placeholder: "Search groups...";
+                        submitted => { root.pool-search-submitted(); }
+                        cleared => { root.pool-search-cleared(); }
+                    }
+                    ListView {
+                        vertical-stretch: 1;
+                        for p in root.pool-rows : Rectangle {
+                            height: 36px;
+                            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border-light; }
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 2px;
+                                spacing: 6px;
+                                Text { text: p.name; font-size: 12px; font-weight: 600; color: Theme.text; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                LevelText { width: 44px; text: p.stock; level: p.level; }
+                                Rectangle {
+                                    width: 56px;
+                                    SmallButton {
+                                        width: 52px;
+                                        y: (parent.height - self.height) / 2;
+                                        text: "Adjust";
+                                        tone: #955E12;
+                                        hover-bg: #FFF4DE;
+                                        clicked => { root.pool-adjust(p.id); }
+                                    }
+                                }
+                                Rectangle {
+                                    width: 60px;
+                                    SmallButton {
+                                        width: 56px;
+                                        y: (parent.height - self.height) / 2;
+                                        text: "History";
+                                        tone: Theme.label;
+                                        hover-bg: Theme.warm-white;
+                                        clicked => { root.pool-history(p.id); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if root.pool-rows.length == 0 : Text {
+                        text: root.pool-empty;
+                        color: Theme.muted;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        height: 40px;
+                        vertical-alignment: center;
+                    }
+                    PagerBar {
+                        range: root.pool-range;
+                        can-prev: root.pool-can-prev;
+                        can-next: root.pool-can-next;
+                        loading: root.pool-loading;
+                        prev => { root.pool-prev(); }
+                        next => { root.pool-next(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Adjust one product's (or one variant group's) stock.
+export component AdjustDialog inherits Rectangle {
+    in property <string> title;
+    in property <string> current;
+    in property <int> level;
+    in property <string> note;
+    in-out property <string> qty;
+    in-out property <int> reason-index;
+    in property <[string]> reasons;
+    in property <string> feedback;
+    in property <bool> feedback-ok;
+
+    callback add();
+    callback remove();
+    callback history();
+    callback close();
+
+    background: #00000066;
+    TouchArea { }
+    init => { qty-field.focus-input(); }
+
+    Rectangle {
+        width: 420px;
+        height: min(card.preferred-height, parent.height - 30px);
+        background: white;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Theme.border;
+        clip: true;
+
+        card := VerticalLayout {
+            Rectangle {
+                height: 48px;
+                background: Theme.dark;
+                Rectangle { y: parent.height - 2px; height: 2px; background: Theme.accent; }
+                Text { x: 20px; text: "Adjust stock"; color: white; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+            }
+            VerticalLayout {
+                padding: 20px;
+                padding-top: 14px;
+                spacing: 6px;
+                alignment: start;
+
+                Text { text: root.title; font-size: 14px; font-weight: 700; color: Theme.text; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Text { text: "In stock:"; font-size: 12px; color: Theme.label; vertical-alignment: center; }
+                    LevelText { text: root.current; level: root.level; font-size: 20px; font-weight: 800; horizontal-alignment: left; }
+                }
+                if root.note != "" : Text { text: root.note; font-size: 11px; color: #6B4309; wrap: word-wrap; }
+                Rectangle { height: 4px; }
+
+                FieldLabel { text: "Quantity"; }
+                qty-field := Field {
+                    text <=> root.qty;
+                    placeholder: "e.g. 12";
+                    accepted => { root.add(); }
+                }
+                FieldLabel { text: "Reason"; }
+                Select {
+                    options: root.reasons;
+                    index <=> root.reason-index;
+                }
+
+                // the message sits in a box as tall as its text, so it can never push the buttons out
+                if root.feedback != "" : Rectangle {
+                    height: feedback-label.preferred-height + 8px;
+                    feedback-label := Text {
+                        x: 0px;
+                        y: 4px;
+                        width: parent.width;
+                        text: root.feedback;
+                        color: root.feedback-ok ? Theme.green : Theme.red;
+                        font-size: 12px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
+                }
+
+                Rectangle { height: 4px; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 40px;
+                    AmberButton { width: 186px; text: "+  Add stock"; clicked => { root.add(); } }
+                    OutlineButton { width: 186px; text: "−  Remove stock"; clicked => { root.remove(); } }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 40px;
+                    OutlineButton { width: 186px; text: "View history"; clicked => { root.history(); } }
+                    OutlineButton { width: 186px; text: "Close"; clicked => { root.close(); } }
+                }
+            }
+        }
+    }
+}
+
+// The stock history of a product or variant group, newest first.
+export component HistoryDialog inherits Rectangle {
+    in property <string> title;
+    in property <[HistoryRowData]> rows;
+    in property <string> empty;
+    callback close();
+
+    background: #00000066;
+    TouchArea { }
+
+    Rectangle {
+        width: min(640px, parent.width - 40px);
+        height: min(560px, parent.height - 30px);
+        background: white;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Theme.border;
+        clip: true;
+
+        Rectangle {
+            y: 0px;
+            height: 48px;
+            background: Theme.dark;
+            Rectangle { y: parent.height - 2px; height: 2px; background: Theme.accent; }
+            Text { x: 20px; width: parent.width - 40px; text: "Stock history  ·  " + root.title; color: white; font-size: 14px; font-weight: 700; vertical-alignment: center; overflow: elide; }
+        }
+        Rectangle {
+            x: 0px;
+            y: 48px;
+            width: parent.width;
+            height: parent.height - 48px - 64px;
+            VerticalLayout {
+                padding: 14px;
+                spacing: 4px;
+                HorizontalLayout {
+                    height: 22px;
+                    padding-left: 8px;
+                    spacing: 8px;
+                    HeaderText { text: "CHANGE"; width: 70px; }
+                    HeaderText { text: "REASON"; horizontal-stretch: 1; }
+                    HeaderText { text: "BY"; width: 130px; }
+                    HeaderText { text: "WHEN"; width: 140px; }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for h in root.rows : Rectangle {
+                        height: 30px;
+                        Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border-light; }
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            spacing: 8px;
+                            Text { text: h.change; width: 70px; font-size: 13px; font-weight: 700; color: h.up ? Theme.green : Theme.red; vertical-alignment: center; }
+                            Text { text: h.reason; font-size: 12px; color: Theme.text; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                            Text { text: h.by; width: 130px; font-size: 12px; color: Theme.muted; vertical-alignment: center; overflow: elide; }
+                            Text { text: h.at; width: 140px; font-size: 11px; color: Theme.muted; vertical-alignment: center; }
+                        }
+                    }
+                }
+                if root.rows.length == 0 : Text {
+                    text: root.empty;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    vertical-stretch: 1;
+                }
+            }
+        }
+        Rectangle {
+            y: parent.height - 64px;
+            height: 64px;
+            HorizontalLayout {
+                padding: 12px;
+                alignment: end;
+                OutlineButton { width: 110px; text: "Close"; clicked => { root.close(); } }
+            }
+        }
+    }
+}

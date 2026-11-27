@@ -4,6 +4,7 @@
 
 mod catalog;
 mod products;
+mod stock;
 pub use products::ProductsDb;
 
 use std::{path::Path, sync::Mutex};
@@ -84,6 +85,21 @@ impl UsersDb {
 }
 
 impl UserRepository for UsersDb {
+    fn full_names(&self, ids: &[i64]) -> Result<Vec<(i64, String)>, StorageError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().map_err(storage)?;
+        let marks = vec!["?"; ids.len()].join(",");
+        let mut stmt = conn.prepare(&format!("SELECT id, full_name FROM users WHERE id IN ({marks})")).map_err(storage)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(ids.iter()), |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        Ok(rows)
+    }
+
     fn find_by_username(&self, username: &str) -> Result<Option<UserRecord>, StorageError> {
         let conn = self.conn.lock().map_err(storage)?;
         let row = conn

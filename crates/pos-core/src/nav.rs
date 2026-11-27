@@ -78,7 +78,7 @@ pub fn areas_for(role: Role) -> Vec<Area> {
 }
 
 /// Pages that already exist in this Rust version. The window shows a "coming next" note for the rest.
-pub const BUILT_PAGES: &[&str] = &["products", "groups"];
+pub const BUILT_PAGES: &[&str] = &["products", "groups", "stock"];
 
 pub fn is_built(key: &str) -> bool {
     BUILT_PAGES.contains(&key)

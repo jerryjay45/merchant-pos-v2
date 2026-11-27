@@ -110,7 +110,8 @@ fn migrate(conn: &Connection) -> Result<(), StorageError> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_products_markup_group ON products(group_id);
          CREATE INDEX IF NOT EXISTS idx_products_discount1    ON products(discount_level1_id);
-         CREATE INDEX IF NOT EXISTS idx_products_discount2    ON products(discount_level2_id);",
+         CREATE INDEX IF NOT EXISTS idx_products_discount2    ON products(discount_level2_id);
+         CREATE INDEX IF NOT EXISTS idx_products_stock        ON products(stock);",
     )
     .map_err(storage)?;
     Ok(())
@@ -128,7 +129,7 @@ pub(crate) fn like_literal(text: &str) -> String {
 
 /// SQL starting with ` AND ` plus its parameters: a case-insensitive substring match on barcode,
 /// name, alias-group name and variant-group name.
-fn search_clause(conn: &Connection, search: &str) -> (String, Vec<Value>) {
+pub(crate) fn search_clause(conn: &Connection, search: &str) -> (String, Vec<Value>) {
     let text = search.to_lowercase();
     let like = like_literal(&text);
     if text.chars().count() >= 3 && fts_available(conn) {

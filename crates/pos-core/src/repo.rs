@@ -25,6 +25,10 @@ pub trait UserRepository: Send + Sync {
         password_hash: &str,
         role: Role,
     ) -> Result<i64, StorageError>;
+    /// Full names for these user ids (missing ids are left out), e.g. to show who changed stock.
+    fn full_names(&self, _ids: &[i64]) -> Result<Vec<(i64, String)>, StorageError> {
+        Ok(Vec::new())
+    }
 }
 
 pub trait SessionRepository: Send + Sync {
@@ -88,6 +92,9 @@ impl<T: UserRepository + ?Sized> UserRepository for Arc<T> {
     }
     fn insert_user(&self, n: &str, u: &str, h: &str, r: Role) -> Result<i64, StorageError> {
         (**self).insert_user(n, u, h, r)
+    }
+    fn full_names(&self, ids: &[i64]) -> Result<Vec<(i64, String)>, StorageError> {
+        (**self).full_names(ids)
     }
 }
 impl<T: SessionRepository + ?Sized> SessionRepository for Arc<T> {

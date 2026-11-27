@@ -17,6 +17,7 @@ use pos_db::{ConfigDb, ProductsDb, UsersDb};
 use slint::ComponentHandle;
 
 mod groups;
+mod stock;
 mod product_form;
 mod supervisor;
 
@@ -210,7 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let users = Arc::new(UsersDb::open(dir.join("users.db"))?);
     let config = Arc::new(ConfigDb::open(dir.join("config.db"))?);
     let products = Arc::new(ProductsDb::open(dir.join("products.db"))?);
-    let ctx = Arc::new(supervisor::Ctx { config: config.clone(), products });
+    let ctx = Arc::new(supervisor::Ctx { config: config.clone(), products, users: users.clone() });
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("add-user") {

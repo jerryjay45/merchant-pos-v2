@@ -11,6 +11,7 @@ pub mod product;
 pub mod product_edit;
 pub mod repo;
 pub mod setup;
+pub mod stock;
 pub mod user;
 
 pub use auth::{check_session_gate, new_password_hash, verify_password, AuthError, AuthService};
@@ -31,4 +32,8 @@ pub use case_pricing::{follows_unit, price_case, savings_cents, CaseLink, CaseSe
 pub use catalog::{
     clean_group_name, markup_text, parse_level, parse_markup_percent, CatalogRepository, LevelInput, LevelRow, ListPage, ListQuery, MarkupChange,
     MarkupGroupRow, MarkupOutcome,
+};
+pub use stock::{
+    parse_qty, History, HistoryRow, PoolRow, StockChange, StockFilter, StockLevel, StockRepository, StockRow, StockSummary,
+    DEFAULT_LOW_STOCK, MAX_ADJUST, REASONS,
 };

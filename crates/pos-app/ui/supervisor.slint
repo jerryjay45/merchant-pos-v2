@@ -4,6 +4,7 @@ import { Field, OutlineButton, AmberButton, SmallButton } from "widgets.slint";
 import { ProductForm } from "product_form.slint";
 import { GroupChooser } from "group_chooser.slint";
 import { GroupsPage, MarkupRowData, LevelRowData } from "groups_page.slint";
+import { StockPage, AdjustDialog, HistoryDialog, StockRowData, PoolRowData, HistoryRowData } from "stock_page.slint";
 
 // Supervisor / manager window: areas across the top, pages inside each area, the page below.
 // Same structure as the Python app (Sales / Inventory / Printing / Data / Setup). The areas and
@@ -292,6 +293,57 @@ export component SupervisorWindow inherits Window {
     callback level-search-cleared();
     callback level-prev();
     callback level-next();
+    // Stock page (pos-app/src/stock.rs fills these in)
+    in property <string> st-alert;
+    in property <[StockRowData]> st-rows;
+    in-out property <string> st-search;
+    in-out property <int> st-filter-index;
+    in property <string> st-range;
+    in property <bool> st-can-prev;
+    in property <bool> st-can-next;
+    in property <bool> st-loading;
+    in property <string> st-empty;
+    in property <[PoolRowData]> st-pool-rows;
+    in-out property <string> st-pool-search;
+    in property <string> st-pool-range;
+    in property <bool> st-pool-can-prev;
+    in property <bool> st-pool-can-next;
+    in property <bool> st-pool-loading;
+    in property <string> st-pool-empty;
+    callback st-search-submitted();
+    callback st-search-cleared();
+    callback st-refresh();
+    callback st-filter-changed();
+    callback st-prev();
+    callback st-next();
+    callback st-adjust(int);
+    callback st-history(int);
+    callback st-pool-search-submitted();
+    callback st-pool-search-cleared();
+    callback st-pool-prev();
+    callback st-pool-next();
+    callback st-pool-adjust(int);
+    callback st-pool-history(int);
+    // the two stock dialogs
+    in property <bool> adj-open;
+    in property <string> adj-title;
+    in property <string> adj-current;
+    in property <int> adj-level;
+    in property <string> adj-note;
+    in-out property <string> adj-qty;
+    in-out property <int> adj-reason-index;
+    in property <[string]> adj-reasons;
+    in property <string> adj-feedback;
+    in property <bool> adj-feedback-ok;
+    callback adj-add();
+    callback adj-remove();
+    callback adj-history();
+    callback adj-close();
+    in property <bool> hist-open;
+    in property <string> hist-title;
+    in property <[HistoryRowData]> hist-rows;
+    in property <string> hist-empty;
+    callback hist-close();
     in property <string> groups-status;
     in property <bool> groups-status-ok;
     in property <bool> groups-dirty;
@@ -527,7 +579,41 @@ export component SupervisorWindow inherits Window {
                 add-level => { root.add-level(); }
                 save => { root.groups-save(); }
             }
-            if !(root.page-built && (root.current-page == "products" || root.current-page == "groups")) : Rectangle {
+            if root.current-page == "stock" && root.page-built : StockPage {
+                width: parent.width;
+                height: parent.height;
+                alert: root.st-alert;
+                rows: root.st-rows;
+                search <=> root.st-search;
+                filter-index <=> root.st-filter-index;
+                range: root.st-range;
+                can-prev: root.st-can-prev;
+                can-next: root.st-can-next;
+                loading: root.st-loading;
+                empty: root.st-empty;
+                pool-rows: root.st-pool-rows;
+                pool-search <=> root.st-pool-search;
+                pool-range: root.st-pool-range;
+                pool-can-prev: root.st-pool-can-prev;
+                pool-can-next: root.st-pool-can-next;
+                pool-loading: root.st-pool-loading;
+                pool-empty: root.st-pool-empty;
+                search-submitted => { root.st-search-submitted(); }
+                search-cleared => { root.st-search-cleared(); }
+                refresh => { root.st-refresh(); }
+                filter-changed => { root.st-filter-changed(); }
+                prev => { root.st-prev(); }
+                next => { root.st-next(); }
+                adjust(id) => { root.st-adjust(id); }
+                history(id) => { root.st-history(id); }
+                pool-search-submitted => { root.st-pool-search-submitted(); }
+                pool-search-cleared => { root.st-pool-search-cleared(); }
+                pool-prev => { root.st-pool-prev(); }
+                pool-next => { root.st-pool-next(); }
+                pool-adjust(id) => { root.st-pool-adjust(id); }
+                pool-history(id) => { root.st-pool-history(id); }
+            }
+            if !(root.page-built && (root.current-page == "products" || root.current-page == "groups" || root.current-page == "stock")) : Rectangle {
                 width: parent.width;
                 height: parent.height;
                 background: Theme.warm-white;
@@ -605,6 +691,33 @@ export component SupervisorWindow inherits Window {
         save => { root.form-save(); }
         cancel => { root.form-cancel(); }
         delete => { root.form-delete(); }
+    }
+
+    if root.adj-open : AdjustDialog {
+        width: parent.width;
+        height: parent.height;
+        title: root.adj-title;
+        current: root.adj-current;
+        level: root.adj-level;
+        note: root.adj-note;
+        qty <=> root.adj-qty;
+        reason-index <=> root.adj-reason-index;
+        reasons: root.adj-reasons;
+        feedback: root.adj-feedback;
+        feedback-ok: root.adj-feedback-ok;
+        add => { root.adj-add(); }
+        remove => { root.adj-remove(); }
+        history => { root.adj-history(); }
+        close => { root.adj-close(); }
+    }
+
+    if root.hist-open : HistoryDialog {
+        width: parent.width;
+        height: parent.height;
+        title: root.hist-title;
+        rows: root.hist-rows;
+        empty: root.hist-empty;
+        close => { root.hist-close(); }
     }
 
     if root.chooser-title != "" : GroupChooser {
